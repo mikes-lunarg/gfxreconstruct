@@ -4,6 +4,10 @@ target_sources(gfxrecon_application
                PRIVATE
                     application.h
                     application.cpp
+                    null_application.h
+                    null_window.h
+                    null_application.cpp
+                    null_window.cpp
                     $<$<BOOL:${XCB_FOUND}>:xcb_application.h>
                     $<$<BOOL:${XCB_FOUND}>:xcb_window.h>
                     $<$<BOOL:${XCB_FOUND}>:xcb_application.cpp>

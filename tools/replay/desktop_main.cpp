@@ -45,6 +45,8 @@
 #include "application/wayland_application.h"
 #include "application/wayland_window.h"
 #endif
+#include "application/null_application.h"
+#include "application/null_window.h"
 #endif
 
 const char kLayerEnvVar[] = "VK_INSTANCE_LAYERS";
@@ -91,16 +93,23 @@ int main(int argc, const char** argv)
             window_factory = std::make_unique<gfxrecon::application::Win32WindowFactory>(win32_application);
 #endif
 #else
-#if defined(VK_USE_PLATFORM_XCB_KHR)
+#if 0
+defined(VK_USE_PLATFORM_XCB_KHR)
             gfxrecon::application::XcbApplication* xcb_application =
                 new gfxrecon::application::XcbApplication(kApplicationName);
             application    = std::unique_ptr<gfxrecon::application::Application>(xcb_application);
             window_factory = std::make_unique<gfxrecon::application::XcbWindowFactory>(xcb_application);
-#elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
+#elif 0
+defined(VK_USE_PLATFORM_WAYLAND_KHR)
             gfxrecon::application::WaylandApplication* wayland_application =
                 new gfxrecon::application::WaylandApplication(kApplicationName);
             application    = std::unique_ptr<gfxrecon::application::Application>(wayland_application);
             window_factory = std::make_unique<gfxrecon::application::WaylandWindowFactory>(wayland_application);
+#else
+            gfxrecon::application::NullApplication* null_application =
+                new gfxrecon::application::NullApplication(kApplicationName);
+            application    = std::unique_ptr<gfxrecon::application::Application>(null_application);
+            window_factory = std::make_unique<gfxrecon::application::NullWindowFactory>(null_application);
 #endif
 #endif
 
