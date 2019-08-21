@@ -63,7 +63,7 @@ class VulkanStructHandleMappersBodyGenerator(BaseGenerator):
         write('GFXRECON_BEGIN_NAMESPACE(gfxrecon)', file=self.outFile)
         write('GFXRECON_BEGIN_NAMESPACE(decode)', file=self.outFile)
 
-        # Implement a utility function to be used for processing arrays of handles.
+        # Implement a utility function to be used for mapping arrays of handles.
         self.newline()
         write('template <typename T>', file=self.outFile)
         write('static void MapHandleArray(const format::HandleId*   ids,', file=self.outFile)
@@ -77,6 +77,27 @@ class VulkanStructHandleMappersBodyGenerator(BaseGenerator):
         write('        for (size_t i = 0; i < len; ++i)', file=self.outFile)
         write('        {', file=self.outFile)
         write('            handles[i] = (object_mapper.*MapFunc)(ids[i]);', file=self.outFile)
+        write('        }', file=self.outFile)
+        write('    }', file=self.outFile)
+        write('}', file=self.outFile)
+
+        # Implement a utility function to be used for adding arrays of handles.
+        self.newline()
+        write('template <typename T>', file=self.outFile)
+        write('static void AddHandleArray(const format::HandleId*   ids,', file=self.outFile)
+        write('                           size_t                    ids_len,', file=self.outFile)
+        write('                           const T*                  handles,', file=self.outFile)
+        write('                           size_t                    handles_len,', file=self.outFile)
+        write('                           VulkanObjectMapper&       object_mapper,', file=self.outFile)
+        write('                           void (VulkanObjectMapper::*AddFunc)(format::HandleId, T))', file=self.outFile)
+        write('{', file=self.outFile)
+        write('    if ((ids != nullptr) && (handles != nullptr))', file=self.outFile)
+        write('    {', file=self.outFile)
+        write('        // TODO: Improved handling of array size mismatch.', file=self.outFile)
+        write('        size_t len = std::min(ids_len, handles_len);', file=self.outFile)
+        write('        for (size_t i = 0; i < len; ++i)', file=self.outFile)
+        write('        {', file=self.outFile)
+        write('            (object_mapper.*AddFunc)(ids[i], handles[i]);', file=self.outFile)
         write('        }', file=self.outFile)
         write('    }', file=self.outFile)
         write('}', file=self.outFile)
@@ -99,6 +120,27 @@ class VulkanStructHandleMappersBodyGenerator(BaseGenerator):
         for baseType in self.pNextStructs:
             write('        case {}:'.format(self.pNextStructs[baseType]), file=self.outFile)
             write('            MapStructHandles(reinterpret_cast<Decoded_{}*>(wrapper), object_mapper);'.format(baseType), file=self.outFile)
+            write('            break;', file=self.outFile)
+        write('        }', file=self.outFile)
+        write('    }', file=self.outFile)
+        write('}', file=self.outFile)
+
+        # Generate the pNext handle adding code.
+        self.newline()
+        write('void AddPNextStructHandles(const void* value, const void* id_wrapper, const void* handle_struct, VulkanObjectMapper& object_mapper)', file=self.outFile)
+        write('{', file=self.outFile)
+        write('    if ((value != nullptr) && (id_wrapper != nullptr) && (handle_struct != nullptr))', file=self.outFile)
+        write('    {', file=self.outFile)
+        write('        const VkBaseInStructure* base = reinterpret_cast<const VkBaseInStructure*>(value);', file=self.outFile)
+        write('', file=self.outFile)
+        write('        switch (base->sType)', file=self.outFile)
+        write('        {', file=self.outFile)
+        write('        default:', file=self.outFile)
+        write('            // TODO: Report or raise fatal error for unrecongized sType?', file=self.outFile)
+        write('            break;', file=self.outFile)
+        for baseType in self.pNextStructs:
+            write('        case {}:'.format(self.pNextStructs[baseType]), file=self.outFile)
+            write('            AddStructHandles(reinterpret_cast<const Decoded_{type}*>(id_wrapper), reinterpret_cast<const {type}*>(handle_struct), object_mapper);'.format(type=baseType), file=self.outFile)
             write('            break;', file=self.outFile)
         write('        }', file=self.outFile)
         write('    }', file=self.outFile)
@@ -160,6 +202,15 @@ class VulkanStructHandleMappersBodyGenerator(BaseGenerator):
 
                 body += self.makeStructHandleMappings(struct, members)
                 body += '    }\n'
+                body += '}\n'
+
+                body += '\n'
+                body += 'void AddStructHandles(const Decoded_{type}* id_wrapper, const {type}* handle_struct, VulkanObjectMapper& object_mapper)\n'.format(type=struct)
+                body += '{\n'
+                body += '    if (id_wrapper != nullptr)\n'
+                body += '    {'
+                body += self.makeStructHandleAdditions(struct, members)
+                body += '    }\n'
                 body += '}'
 
                 write(body, file=self.outFile)
@@ -189,10 +240,43 @@ class VulkanStructHandleMappersBodyGenerator(BaseGenerator):
                 # If it is an array or pointer, map with the utility function.
                 if (member.isArray or member.isPointer):
                     if member.isArray:
-                        body += '        MapHandleArray<{type}>(wrapper->{name}.GetPointer(), wrapper->{name}.GetHandlePointer(), wrapper->{name}.GetLength(), object_mapper, &VulkanObjectMapper::Map{type});\n'.format(type=member.baseType, name=member.name);
+                        body += '        MapHandleArray<{type}>(wrapper->{name}.GetPointer(), wrapper->{name}.GetHandlePointer(), wrapper->{name}.GetLength(), object_mapper, &VulkanObjectMapper::Map{type});\n'.format(type=member.baseType, name=member.name)
                     else:
-                        body += '        MapHandleArray<{type}>(wrapper->{name}.GetPointer(), wrapper->{name}.GetHandlePointer(), 1, object_mapper, &VulkanObjectMapper::Map{type});\n'.format(type=member.baseType, name=member.name);
+                        body += '        MapHandleArray<{type}>(wrapper->{name}.GetPointer(), wrapper->{name}.GetHandlePointer(), 1, object_mapper, &VulkanObjectMapper::Map{type});\n'.format(type=member.baseType, name=member.name)
                 else:
                     body += '        value->{name} = object_mapper.Map{}(wrapper->{name});\n'.format(member.baseType, name=member.name)
+
+        return body
+
+    #
+    # Generating expressions for adding mappings for handles created at replay that are embedded in structs
+    def makeStructHandleAdditions(self, name, members):
+        body = ''
+
+        for member in members:
+            body += '\n'
+
+            if 'pNext' in member.name:
+                body += '        if (id_wrapper->pNext)\n'
+                body += '        {\n'
+                body += '            AddPNextStructHandles(id_wrapper->pNext->GetPointer(), id_wrapper->pNext->GetMetaStructPointer(), handle_struct->pNext, object_mapper);\n'
+                body += '        }\n'
+            elif self.isStruct(member.baseType):
+                # This is a struct that includes handles.
+                if member.isArray:
+                    body += '        AddStructArrayHandles<Decoded_{}>(id_wrapper->{name}->GetMetaStructPointer(), id_wrapper->{name}->GetLength(), handle_struct->{name}, static_cast<size_t>(handle_struct->{length}), object_mapper);\n'.format(member.baseType, name=member.name, length=member.arrayLength)
+                elif member.isPointer:
+                    body += '        AddStructArrayHandles<Decoded_{}>(id_wrapper->{name}->GetMetaStructPointer(), 1, handle_struct->{name}, 1, object_mapper);\n'.format(member.baseType, name=member.name)
+                else:
+                    body += '        AddStructHandles(id_wrapper->{name}.get(), &handle_struct->{name}, object_mapper);\n'.format(name=member.name)
+            else:
+                # If it is an array or pointer, add with the utility function.
+                if (member.isArray or member.isPointer):
+                    if member.isArray:
+                        body += '        AddHandleArray<{type}>(id_wrapper->{name}.GetPointer(), id_wrapper->{name}.GetLength(), handle_struct->{name}, handle_struct->{length}, object_mapper, &VulkanObjectMapper::Add{type});\n'.format(type=member.baseType, name=member.name, length=member.arrayLength)
+                    else:
+                        body += '        AddHandleArray<{type}>(id_wrapper->{name}.GetPointer(), 1, handle_struct->{name}, 1, object_mapper, &VulkanObjectMapper::Add{type});\n'.format(type=member.baseType, name=member.name)
+                else:
+                    body += '        object_mapper.Add{type}(id_wrapper->{name}, handle_struct->{name});\n'.format(type=member.baseType, name=member.name)
 
         return body
