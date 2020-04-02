@@ -96,6 +96,10 @@ class VulkanStatsConsumer : public gfxrecon::decode::VulkanConsumer
     uint64_t           GetAllocationCount() const { return allocation_count_; }
     uint64_t           GetMinAllocationSize() const { return min_allocation_size_; }
     uint64_t           GetMaxAllocationSize() const { return max_allocation_size_; }
+    uint64_t           GetImageCount() const { return image_count_; }
+    uint64_t           GetMaxConcurrentImageCount() const { return max_concurrent_image_count_; }
+    uint64_t           GetBufferCount() const { return buffer_count_; }
+    uint64_t           GetMaxConcurrentBufferCount() const { return max_concurrent_buffer_count_; }
 
     const std::set<gfxrecon::format::HandleId>& GetInstantiatedDevices() const { return used_physical_devices_; }
     const VkPhysicalDeviceProperties*           GetDeviceProperties(gfxrecon::format::HandleId id) const
@@ -365,6 +369,43 @@ class VulkanStatsConsumer : public gfxrecon::decode::VulkanConsumer
         }
     }
 
+    virtual void Process_vkCreateImage(
+        VkResult                                                                                       returnValue,
+        gfxrecon::format::HandleId                                                                     device,
+        const gfxrecon::decode::StructPointerDecoder<gfxrecon::decode::Decoded_VkImageCreateInfo>&     pCreateInfo,
+        const gfxrecon::decode::StructPointerDecoder<gfxrecon::decode::Decoded_VkAllocationCallbacks>& pAllocator,
+        gfxrecon::decode::HandlePointerDecoder<VkImage>*                                               pImage) override
+    {
+        ++image_count_;
+        max_concurrent_image_count_ = std::max(max_concurrent_image_count_, ++concurrent_image_count_);
+    }
+    virtual void Process_vkDestroyImage(
+        gfxrecon::format::HandleId                                                                     device,
+        gfxrecon::format::HandleId                                                                     image,
+        const gfxrecon::decode::StructPointerDecoder<gfxrecon::decode::Decoded_VkAllocationCallbacks>& pAllocator) override
+    {
+        --concurrent_image_count_;
+    }
+
+    virtual void Process_vkCreateBuffer(
+        VkResult                                                                                       returnValue,
+        gfxrecon::format::HandleId                                                                     device,
+        const gfxrecon::decode::StructPointerDecoder<gfxrecon::decode::Decoded_VkBufferCreateInfo>&    pCreateInfo,
+        const gfxrecon::decode::StructPointerDecoder<gfxrecon::decode::Decoded_VkAllocationCallbacks>& pAllocator,
+        gfxrecon::decode::HandlePointerDecoder<VkBuffer>*                                              pBuffer) override
+    {
+        ++buffer_count_;
+        max_concurrent_buffer_count_ = std::max(max_concurrent_buffer_count_, ++concurrent_buffer_count_);
+    }
+
+    virtual void Process_vkDestroyBuffer(
+        gfxrecon::format::HandleId                                                                     device,
+        gfxrecon::format::HandleId                                                                     buffer,
+        const gfxrecon::decode::StructPointerDecoder<gfxrecon::decode::Decoded_VkAllocationCallbacks>& pAllocator) override
+    {
+        --concurrent_buffer_count_;
+    }
+
   private:
     uint32_t trimmed_frame_{ 0 };
 
@@ -391,6 +432,14 @@ class VulkanStatsConsumer : public gfxrecon::decode::VulkanConsumer
     uint64_t allocation_count_{ 0 };
     uint64_t min_allocation_size_{ std::numeric_limits<uint64_t>::max() };
     uint64_t max_allocation_size_{ 0 };
+
+    // Resource info
+    uint64_t image_count_{ 0 };
+    uint64_t concurrent_image_count_{ 0 };
+    uint64_t max_concurrent_image_count_{ 0 };
+    uint64_t buffer_count_{ 0 };
+    uint64_t concurrent_buffer_count_{ 0 };
+    uint64_t max_concurrent_buffer_count_{ 0 };
 };
 
 int main(int argc, const char** argv)
@@ -492,6 +541,14 @@ int main(int argc, const char** argv)
             GFXRECON_WRITE_CONSOLE("\nPipeline info:");
             GFXRECON_WRITE_CONSOLE("\tTotal graphics pipelines: %" PRIu64, stats_consumer.GetGraphicsPipelineCount());
             GFXRECON_WRITE_CONSOLE("\tTotal compute pipelines: %" PRIu64, stats_consumer.GetComputePipelineCount());
+
+            GFXRECON_WRITE_CONSOLE("\nResource info:");
+            GFXRECON_WRITE_CONSOLE("\tTotal images: %" PRIu64, stats_consumer.GetImageCount());
+            GFXRECON_WRITE_CONSOLE("\tTotal buffers: %" PRIu64, stats_consumer.GetBufferCount());
+            GFXRECON_WRITE_CONSOLE("\tMaximum concurrent images: %" PRIu64,
+                                   stats_consumer.GetMaxConcurrentImageCount());
+            GFXRECON_WRITE_CONSOLE("\tMaximum concurrent buffers: %" PRIu64,
+                                   stats_consumer.GetMaxConcurrentBufferCount());
 
             // TODO: This is the number of recorded draw calls, which will not reflect the number of draw calls executed
             // when recorded once to a command buffer that is submitted/replayed more than once.
