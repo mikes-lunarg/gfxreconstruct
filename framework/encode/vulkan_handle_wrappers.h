@@ -183,6 +183,11 @@ struct BufferWrapper : public HandleWrapper<VkBuffer>
     // State tracking info for buffers with device addresses.
     format::HandleId device_id{ format::kNullHandleId };
     VkDeviceAddress  address{ 0 };
+
+    // State tracking for VkBindBufferMemoryDeviceGroupInfo
+    format::ApiCallId           bind_call_id{ format::ApiCallId::ApiCall_Unknown };
+    uint32_t                    device_index_count{ 0 };
+    std::unique_ptr<uint32_t[]> device_indices;
 };
 
 struct ImageWrapper : public HandleWrapper<VkImage>
@@ -199,6 +204,13 @@ struct ImageWrapper : public HandleWrapper<VkImage>
     VkSampleCountFlagBits samples{};
     VkImageTiling         tiling{};
     VkImageLayout         current_layout{ VK_IMAGE_LAYOUT_UNDEFINED };
+
+    // State tracking for VkBindImageMemoryDeviceGroupInfo
+    format::ApiCallId           bind_call_id{ format::ApiCallId::ApiCall_Unknown };
+    uint32_t                    device_index_count{ 0 };
+    std::unique_ptr<uint32_t[]> device_indices;
+    uint32_t                    split_instance_bind_region_count{ 0 };
+    std::unique_ptr<VkRect2D[]> split_instance_bind_regions;
 };
 
 struct BufferViewWrapper : public HandleWrapper<VkBufferView>

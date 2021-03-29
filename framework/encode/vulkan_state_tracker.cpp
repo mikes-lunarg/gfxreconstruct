@@ -208,10 +208,12 @@ void VulkanStateTracker::TrackBufferDeviceAddress(VkDevice device, VkBuffer buff
     wrapper->address   = address;
 }
 
-void VulkanStateTracker::TrackBufferMemoryBinding(VkDevice       device,
-                                                  VkBuffer       buffer,
-                                                  VkDeviceMemory memory,
-                                                  VkDeviceSize   memoryOffset)
+void VulkanStateTracker::TrackBufferMemoryBinding(format::ApiCallId call_id,
+                                                  VkDevice          device,
+                                                  VkBuffer          buffer,
+                                                  VkDeviceMemory    memory,
+                                                  VkDeviceSize      memoryOffset,
+                                                  const void*       pNext)
 {
     assert((device != VK_NULL_HANDLE) && (buffer != VK_NULL_HANDLE) && (memory != VK_NULL_HANDLE));
 
@@ -219,12 +221,30 @@ void VulkanStateTracker::TrackBufferMemoryBinding(VkDevice       device,
     wrapper->bind_device    = reinterpret_cast<DeviceWrapper*>(device);
     wrapper->bind_memory_id = GetWrappedId(memory);
     wrapper->bind_offset    = memoryOffset;
+    wrapper->bind_call_id   = call_id;
+
+    const VkBaseInStructure* next = reinterpret_cast<const VkBaseInStructure*>(pNext);
+    while (next)
+    {
+        if (next->sType == VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_DEVICE_GROUP_INFO)
+        {
+            auto device_group_info      = reinterpret_cast<const VkBindBufferMemoryDeviceGroupInfo*>(next);
+            wrapper->device_index_count = device_group_info->deviceIndexCount;
+            wrapper->device_indices     = std::make_unique<uint32_t[]>(device_group_info->deviceIndexCount);
+            std::copy(device_group_info->pDeviceIndices,
+                      device_group_info->pDeviceIndices + device_group_info->deviceIndexCount,
+                      wrapper->device_indices.get());
+        }
+        next = next->pNext;
+    }
 }
 
-void VulkanStateTracker::TrackImageMemoryBinding(VkDevice       device,
-                                                 VkImage        image,
-                                                 VkDeviceMemory memory,
-                                                 VkDeviceSize   memoryOffset)
+void VulkanStateTracker::TrackImageMemoryBinding(format::ApiCallId call_id,
+                                                 VkDevice          device,
+                                                 VkImage           image,
+                                                 VkDeviceMemory    memory,
+                                                 VkDeviceSize      memoryOffset,
+                                                 const void*       pNext)
 {
     assert((device != VK_NULL_HANDLE) && (image != VK_NULL_HANDLE) && (memory != VK_NULL_HANDLE));
 
@@ -232,6 +252,30 @@ void VulkanStateTracker::TrackImageMemoryBinding(VkDevice       device,
     wrapper->bind_device    = reinterpret_cast<DeviceWrapper*>(device);
     wrapper->bind_memory_id = GetWrappedId(memory);
     wrapper->bind_offset    = memoryOffset;
+    wrapper->bind_call_id   = call_id;
+
+    const VkBaseInStructure* next = reinterpret_cast<const VkBaseInStructure*>(pNext);
+    while (next)
+    {
+        if (next->sType == VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_DEVICE_GROUP_INFO)
+        {
+            auto device_group_info = reinterpret_cast<const VkBindImageMemoryDeviceGroupInfo*>(next);
+
+            wrapper->device_index_count = device_group_info->deviceIndexCount;
+            wrapper->device_indices     = std::make_unique<uint32_t[]>(device_group_info->deviceIndexCount);
+            std::copy(device_group_info->pDeviceIndices,
+                      device_group_info->pDeviceIndices + device_group_info->deviceIndexCount,
+                      wrapper->device_indices.get());
+
+            wrapper->split_instance_bind_region_count = device_group_info->splitInstanceBindRegionCount;
+            wrapper->split_instance_bind_regions =
+                std::make_unique<VkRect2D[]>(device_group_info->splitInstanceBindRegionCount);
+            std::copy(device_group_info->pSplitInstanceBindRegions,
+                      device_group_info->pSplitInstanceBindRegions + device_group_info->splitInstanceBindRegionCount,
+                      wrapper->split_instance_bind_regions.get());
+        }
+        next = next->pNext;
+    }
 }
 
 void VulkanStateTracker::TrackMappedMemory(VkDevice         device,

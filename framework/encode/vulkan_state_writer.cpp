@@ -1501,14 +1501,49 @@ void VulkanStateWriter::WriteBufferMemoryState(const VulkanStateTable& state_tab
             parameter_stream_.Reset();
 
             // Write memory bind command.
-            encoder_.EncodeHandleIdValue(device_wrapper->handle_id);
-            encoder_.EncodeHandleIdValue(wrapper->handle_id);
-            encoder_.EncodeHandleIdValue(memory_wrapper->handle_id);
-            encoder_.EncodeVkDeviceSizeValue(wrapper->bind_offset);
-            encoder_.EncodeEnumValue(VK_SUCCESS);
+            if (wrapper->bind_call_id == format::ApiCall_vkBindBufferMemory)
+            {
+                encoder_.EncodeHandleIdValue(device_wrapper->handle_id);
+                encoder_.EncodeHandleIdValue(wrapper->handle_id);
+                encoder_.EncodeHandleIdValue(memory_wrapper->handle_id);
+                encoder_.EncodeVkDeviceSizeValue(wrapper->bind_offset);
+                encoder_.EncodeEnumValue(VK_SUCCESS);
+                WriteFunctionCall(format::ApiCall_vkBindBufferMemory, &parameter_stream_);
+                parameter_stream_.Reset();
+            }
+            else
+            {
+                void* next = nullptr;
 
-            WriteFunctionCall(format::ApiCall_vkBindBufferMemory, &parameter_stream_);
-            parameter_stream_.Reset();
+                // Add VkBindBufferMemoryDeviceGroupInfo to pNext chain
+                VkBindBufferMemoryDeviceGroupInfo device_group_info = {
+                    VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_DEVICE_GROUP_INFO
+                };
+                if (wrapper->device_indices.get())
+                {
+                    device_group_info.pNext            = next;
+                    device_group_info.deviceIndexCount = wrapper->device_index_count;
+                    if (wrapper->device_index_count != 0)
+                    {
+                        device_group_info.pDeviceIndices = wrapper->device_indices.get();
+                    }
+                    next = &device_group_info;
+                }
+
+                // vkBindBufferMemory2 or vkBindBufferMemory2KHR
+                encoder_.EncodeHandleIdValue(device_wrapper->handle_id);
+                encoder_.EncodeUInt32Value(1);
+                VkBindBufferMemoryInfo bind_info{ VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO };
+                encoder_.EncodeStructPtrPreamble(&bind_info);
+                encoder_.EncodeEnumValue(bind_info.sType);
+                EncodePNextStruct(&encoder_, next);
+                encoder_.EncodeHandleIdValue(wrapper->handle_id);
+                encoder_.EncodeHandleIdValue(wrapper->bind_memory_id);
+                encoder_.EncodeVkDeviceSizeValue(wrapper->bind_offset);
+                encoder_.EncodeEnumValue(VK_SUCCESS);
+                WriteFunctionCall(wrapper->bind_call_id, &parameter_stream_);
+                parameter_stream_.Reset();
+            }
 
             // Group buffers with memory bindings by device for memory snapshot.
             ResourceSnapshotQueueFamilyTable& snapshot_table = (*resources)[device_wrapper];
@@ -1568,14 +1603,59 @@ void VulkanStateWriter::WriteImageMemoryState(const VulkanStateTable& state_tabl
             parameter_stream_.Reset();
 
             // Write memory bind command.
-            encoder_.EncodeHandleIdValue(device_wrapper->handle_id);
-            encoder_.EncodeHandleIdValue(wrapper->handle_id);
-            encoder_.EncodeHandleIdValue(memory_wrapper->handle_id);
-            encoder_.EncodeVkDeviceSizeValue(wrapper->bind_offset);
-            encoder_.EncodeEnumValue(VK_SUCCESS);
+            if (wrapper->bind_call_id == format::ApiCall_vkBindImageMemory)
+            {
+                encoder_.EncodeHandleIdValue(device_wrapper->handle_id);
+                encoder_.EncodeHandleIdValue(wrapper->handle_id);
+                encoder_.EncodeHandleIdValue(memory_wrapper->handle_id);
+                encoder_.EncodeVkDeviceSizeValue(wrapper->bind_offset);
+                encoder_.EncodeEnumValue(VK_SUCCESS);
 
-            WriteFunctionCall(format::ApiCall_vkBindImageMemory, &parameter_stream_);
-            parameter_stream_.Reset();
+                WriteFunctionCall(format::ApiCall_vkBindImageMemory, &parameter_stream_);
+                parameter_stream_.Reset();
+            }
+            else
+            {
+                void* next = nullptr;
+
+                // Add VkBindImageMemoryDeviceGroupInfo to pNext chain
+                VkBindImageMemoryDeviceGroupInfo device_group_info = {
+                    VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_DEVICE_GROUP_INFO
+                };
+                if (wrapper->device_indices.get())
+                {
+                    device_group_info.pNext = next;
+
+                    device_group_info.deviceIndexCount = wrapper->device_index_count;
+                    if (wrapper->device_index_count != 0)
+                    {
+                        device_group_info.pDeviceIndices = wrapper->device_indices.get();
+                    }
+
+                    device_group_info.splitInstanceBindRegionCount = wrapper->split_instance_bind_region_count;
+                    if (wrapper->split_instance_bind_region_count)
+                    {
+                        device_group_info.pSplitInstanceBindRegions = wrapper->split_instance_bind_regions.get();
+                    }
+
+                    next = &device_group_info;
+                }
+
+                // vkBindBufferMemory2 or vkBindBufferMemory2KHR
+                encoder_.EncodeHandleIdValue(device_wrapper->handle_id);
+                encoder_.EncodeUInt32Value(1);
+                VkBindImageMemoryInfo bind_info{ VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO };
+                encoder_.EncodeStructPtrPreamble(&bind_info);
+                encoder_.EncodeEnumValue(bind_info.sType);
+                EncodePNextStruct(&encoder_, next);
+                encoder_.EncodeHandleIdValue(wrapper->handle_id);
+                encoder_.EncodeHandleIdValue(wrapper->bind_memory_id);
+                encoder_.EncodeVkDeviceSizeValue(wrapper->bind_offset);
+                encoder_.EncodeEnumValue(VK_SUCCESS);
+
+                WriteFunctionCall(wrapper->bind_call_id, &parameter_stream_);
+                parameter_stream_.Reset();
+            }
 
             VkMemoryPropertyFlags memory_properties = GetMemoryProperties(device_wrapper, memory_wrapper, state_table);
 

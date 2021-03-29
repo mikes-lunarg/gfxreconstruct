@@ -573,11 +573,13 @@ class TraceManager
         if (((capture_mode_ & kModeTrack) == kModeTrack) && (result == VK_SUCCESS))
         {
             assert(state_tracker_ != nullptr);
-            state_tracker_->TrackBufferMemoryBinding(device, buffer, memory, memoryOffset);
+            state_tracker_->TrackBufferMemoryBinding(
+                format::ApiCallId::ApiCall_vkBindBufferMemory, device, buffer, memory, memoryOffset, nullptr);
         }
     }
 
     void PostProcess_vkBindBufferMemory2(VkResult                      result,
+                                         format::ApiCallId             call_id,
                                          VkDevice                      device,
                                          uint32_t                      bindInfoCount,
                                          const VkBindBufferMemoryInfo* pBindInfos)
@@ -588,8 +590,12 @@ class TraceManager
 
             for (uint32_t i = 0; i < bindInfoCount; ++i)
             {
-                state_tracker_->TrackBufferMemoryBinding(
-                    device, pBindInfos[i].buffer, pBindInfos[i].memory, pBindInfos[i].memoryOffset);
+                state_tracker_->TrackBufferMemoryBinding(call_id,
+                                                         device,
+                                                         pBindInfos[i].buffer,
+                                                         pBindInfos[i].memory,
+                                                         pBindInfos[i].memoryOffset,
+                                                         pBindInfos[i].pNext);
             }
         }
     }
@@ -600,11 +606,13 @@ class TraceManager
         if (((capture_mode_ & kModeTrack) == kModeTrack) && (result == VK_SUCCESS))
         {
             assert(state_tracker_ != nullptr);
-            state_tracker_->TrackImageMemoryBinding(device, image, memory, memoryOffset);
+            state_tracker_->TrackImageMemoryBinding(
+                format::ApiCallId::ApiCall_vkBindImageMemory, device, image, memory, memoryOffset, nullptr);
         }
     }
 
     void PostProcess_vkBindImageMemory2(VkResult                     result,
+                                        format::ApiCallId            call_id,
                                         VkDevice                     device,
                                         uint32_t                     bindInfoCount,
                                         const VkBindImageMemoryInfo* pBindInfos)
@@ -615,8 +623,12 @@ class TraceManager
 
             for (uint32_t i = 0; i < bindInfoCount; ++i)
             {
-                state_tracker_->TrackImageMemoryBinding(
-                    device, pBindInfos[i].image, pBindInfos[i].memory, pBindInfos[i].memoryOffset);
+                state_tracker_->TrackImageMemoryBinding(call_id,
+                                                        device,
+                                                        pBindInfos[i].image,
+                                                        pBindInfos[i].memory,
+                                                        pBindInfos[i].memoryOffset,
+                                                        pBindInfos[i].pNext);
             }
         }
     }
