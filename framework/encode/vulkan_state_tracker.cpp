@@ -103,7 +103,7 @@ void VulkanStateTracker::TrackPhysicalDeviceQueueFamilyProperties(VkPhysicalDevi
     wrapper->queue_family_properties_call_id = format::ApiCallId::ApiCall_vkGetPhysicalDeviceQueueFamilyProperties;
     wrapper->queue_family_properties_count   = property_count;
     wrapper->queue_family_properties         = std::make_unique<VkQueueFamilyProperties[]>(property_count);
-    memcpy(wrapper->queue_family_properties.get(), properties, property_count);
+    std::copy(properties, properties + property_count, wrapper->queue_family_properties.get());
 }
 
 void VulkanStateTracker::TrackPhysicalDeviceQueueFamilyProperties2(format::ApiCallId               call_id,
@@ -117,7 +117,7 @@ void VulkanStateTracker::TrackPhysicalDeviceQueueFamilyProperties2(format::ApiCa
     wrapper->queue_family_properties_call_id = call_id;
     wrapper->queue_family_properties_count   = property_count;
     wrapper->queue_family_properties2        = std::make_unique<VkQueueFamilyProperties2[]>(property_count);
-    memcpy(wrapper->queue_family_properties2.get(), properties, property_count);
+    std::copy(properties, properties + property_count, wrapper->queue_family_properties2.get());
 
     // Copy pNext structure and update pNext pointers.
     for (uint32_t i = 0; i < property_count; ++i)
