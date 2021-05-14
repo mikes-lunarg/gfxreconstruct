@@ -1340,6 +1340,7 @@ void VulkanReplayConsumerBase::ProcessInitBufferCommand(format::HandleId device_
         }
     }
 }
+extern VkFlags gAspect;
 
 void VulkanReplayConsumerBase::ProcessInitImageCommand(format::HandleId             device_id,
                                                        format::HandleId             image_id,
@@ -1371,7 +1372,9 @@ void VulkanReplayConsumerBase::ProcessInitImageCommand(format::HandleId         
                     (image_info->memory_property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ==
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
                 {
+                    gAspect = aspect;
                     result = initializer->LoadData(data_size, data, image_info->allocator_data);
+                    gAspect = 0;
 
                     if (result != VK_SUCCESS)
                     {

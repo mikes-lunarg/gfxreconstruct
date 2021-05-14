@@ -192,10 +192,18 @@ struct BufferWrapper : public HandleWrapper<VkBuffer>
 
 struct ImageWrapper : public HandleWrapper<VkImage>
 {
+    struct BindInfo
+    {
+        format::HandleId      memory_id;
+        VkDeviceSize          offset;
+        // State tracking for VkBindImagePlaneMemoryInfo
+        VkImageAspectFlagBits plane;
+    };
+
     DeviceWrapper*        bind_device{ nullptr };
-    format::HandleId      bind_memory_id{ format::kNullHandleId };
-    VkDeviceSize          bind_offset{ 0 };
+    std::vector<BindInfo> bind_infos{ format::kNullHandleId };
     uint32_t              queue_family_index{ 0 };
+    VkFlags               flags{ 0 };
     VkImageType           image_type{ VK_IMAGE_TYPE_2D };
     VkFormat              format{ VK_FORMAT_UNDEFINED };
     VkExtent3D            extent{ 0, 0, 0 };

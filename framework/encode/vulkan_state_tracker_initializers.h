@@ -556,6 +556,7 @@ inline void InitializeState<VkDevice, ImageWrapper, VkImageCreateInfo>(VkDevice 
     wrapper->create_call_id    = create_call_id;
     wrapper->create_parameters = std::move(create_parameters);
 
+    wrapper->flags        = create_info->flags;
     wrapper->image_type   = create_info->imageType;
     wrapper->format       = create_info->format;
     wrapper->extent       = create_info->extent;

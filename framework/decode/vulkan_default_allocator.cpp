@@ -209,8 +209,8 @@ VkResult VulkanDefaultAllocator::BindBufferMemory(VkBuffer               buffer,
             if ((allocator_buffer_data != 0) && (allocator_memory_data != 0))
             {
                 auto resource_alloc_info          = reinterpret_cast<ResourceAllocInfo*>(allocator_buffer_data);
-                resource_alloc_info->bound_memory = memory;
-                resource_alloc_info->bound_offset = memory_offset;
+                ResourceAllocInfo::BindInfo bind_info = {memory, memory_offset};
+                resource_alloc_info->bind_infos.push_back(bind_info);
 
                 auto memory_alloc_info    = reinterpret_cast<MemoryAllocInfo*>(allocator_memory_data);
                 (*bind_memory_properties) = memory_alloc_info->property_flags;
@@ -249,8 +249,8 @@ VkResult VulkanDefaultAllocator::BindBufferMemory2(uint32_t                     
                 if ((allocator_buffer_data != 0) && (allocator_memory_data != 0))
                 {
                     auto resource_alloc_info          = reinterpret_cast<ResourceAllocInfo*>(allocator_buffer_data);
-                    resource_alloc_info->bound_memory = bind_infos[i].memory;
-                    resource_alloc_info->bound_offset = bind_infos[i].memoryOffset;
+                    ResourceAllocInfo::BindInfo bind_info = {bind_infos[i].memory, bind_infos[i].memoryOffset};
+                    resource_alloc_info->bind_infos.push_back(bind_info);
 
                     auto memory_alloc_info    = reinterpret_cast<MemoryAllocInfo*>(allocator_memory_data);
                     bind_memory_properties[i] = memory_alloc_info->property_flags;
@@ -286,8 +286,7 @@ VkResult VulkanDefaultAllocator::BindImageMemory(VkImage                image,
             if ((allocator_image_data != 0) && (allocator_memory_data != 0))
             {
                 auto resource_alloc_info          = reinterpret_cast<ResourceAllocInfo*>(allocator_image_data);
-                resource_alloc_info->bound_memory = memory;
-                resource_alloc_info->bound_offset = memory_offset;
+                resource_alloc_info->bind_infos.push_back({memory, memory_offset});
 
                 auto memory_alloc_info    = reinterpret_cast<MemoryAllocInfo*>(allocator_memory_data);
                 (*bind_memory_properties) = memory_alloc_info->property_flags;
@@ -325,9 +324,19 @@ VkResult VulkanDefaultAllocator::BindImageMemory2(uint32_t                     b
 
                 if ((allocator_image_data != 0) && (allocator_memory_data != 0))
                 {
-                    auto resource_alloc_info          = reinterpret_cast<ResourceAllocInfo*>(allocator_image_data);
-                    resource_alloc_info->bound_memory = bind_infos[i].memory;
-                    resource_alloc_info->bound_offset = bind_infos[i].memoryOffset;
+                    ResourceAllocInfo::BindInfo bind_info = {bind_infos[i].memory, bind_infos[i].memoryOffset};
+                    auto next = reinterpret_cast<const VkBaseInStructure*>(bind_infos[i].pNext);
+                    while (next)
+                    {
+                        if (next->sType == VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO) {
+                            auto plane_info = reinterpret_cast<const VkBindImagePlaneMemoryInfo*>(next);
+                            bind_info.aspect = plane_info->planeAspect;
+                        }
+                        next = next->pNext;
+                    }
+
+                    auto resource_alloc_info = reinterpret_cast<ResourceAllocInfo*>(allocator_image_data);
+                    resource_alloc_info->bind_infos.push_back(bind_info);
 
                     auto memory_alloc_info    = reinterpret_cast<MemoryAllocInfo*>(allocator_memory_data);
                     bind_memory_properties[i] = memory_alloc_info->property_flags;
@@ -543,7 +552,7 @@ void VulkanDefaultAllocator::ReportBindIncompatibility(const VkMemoryRequirement
         }
     }
 }
-
+VkFlags gAspect = 0;
 VkResult VulkanDefaultAllocator::MapResourceMemoryDirect(VkDeviceSize     size,
                                                          VkMemoryMapFlags flags,
                                                          void**           data,
@@ -555,10 +564,21 @@ VkResult VulkanDefaultAllocator::MapResourceMemoryDirect(VkDeviceSize     size,
     {
         auto resource_alloc_info = reinterpret_cast<ResourceAllocInfo*>(allocator_data);
 
-        if (resource_alloc_info->bound_memory != VK_NULL_HANDLE)
+        if (resource_alloc_info->bind_infos.size() == 1)
         {
             result = functions_.map_memory(
-                device_, resource_alloc_info->bound_memory, resource_alloc_info->bound_offset, size, flags, data);
+                device_, resource_alloc_info->bind_infos[0].memory, resource_alloc_info->bind_infos[0].offset, size, flags, data);
+        }
+        else if (resource_alloc_info->bind_infos.size() > 1)
+        {
+            for (const auto& bind_info : resource_alloc_info->bind_infos)
+            {
+                if (bind_info.aspect == gAspect) {
+                    result = functions_.map_memory(
+                        device_, bind_info.memory, bind_info.offset, size, flags, data);
+                    break;
+                }
+            }
         }
     }
 
@@ -571,9 +591,19 @@ void VulkanDefaultAllocator::UnmapResourceMemoryDirect(ResourceData allocator_da
     {
         auto resource_alloc_info = reinterpret_cast<ResourceAllocInfo*>(allocator_data);
 
-        if (resource_alloc_info->bound_memory != VK_NULL_HANDLE)
+        if (resource_alloc_info->bind_infos.size() == 1)
         {
-            functions_.unmap_memory(device_, resource_alloc_info->bound_memory);
+            functions_.unmap_memory(device_, resource_alloc_info->bind_infos[0].memory);
+        }
+        else if (resource_alloc_info->bind_infos.size() == 1)
+        {
+            for (const auto& bind_info : resource_alloc_info->bind_infos)
+            {
+                if (bind_info.aspect == gAspect) {
+                    functions_.unmap_memory(device_, bind_info.memory);
+                }
+            }
+
         }
     }
 }

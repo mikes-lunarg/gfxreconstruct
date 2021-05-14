@@ -254,9 +254,14 @@ class VulkanDefaultAllocator : public VulkanResourceAllocator
   protected:
     struct ResourceAllocInfo
     {
-        format::HandleId capture_id{ format::kNullHandleId };
-        VkDeviceMemory   bound_memory{ VK_NULL_HANDLE };
-        VkDeviceSize     bound_offset{ 0 };
+        struct BindInfo
+        {
+            VkDeviceMemory        memory;
+            VkDeviceSize          offset;
+            VkImageAspectFlagBits aspect;
+        };
+        format::HandleId      capture_id{ format::kNullHandleId };
+        std::vector<BindInfo> bind_infos;
     };
 
     struct MemoryAllocInfo

@@ -69,6 +69,7 @@ class VulkanStateWriter
         VkMemoryPropertyFlags      memory_properties{};
         bool                       need_staging_copy{ false };
         VkImageAspectFlagBits      aspect{};
+        VkDeviceSize               bind_offset;
         VkDeviceSize               resource_size{ 0 }; // Combined size of all sub-resources.
         std::vector<uint64_t>      level_sizes;        // Combined size of all layers in a mip level.
     };
@@ -162,6 +163,8 @@ class VulkanStateWriter
                                DeviceResourceTables*   resources,
                                VkDeviceSize*           max_resource_size,
                                VkDeviceSize*           max_staging_copy_size);
+                               
+    void WriteBindImageMemory(const ImageWrapper* wrapper);
 
     void WriteImageSubresourceLayouts(const ImageWrapper* image_wrapper, VkImageAspectFlags aspect_flags);
 

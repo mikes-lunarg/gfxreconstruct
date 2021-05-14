@@ -250,9 +250,9 @@ void VulkanStateTracker::TrackImageMemoryBinding(format::ApiCallId call_id,
 
     auto wrapper            = reinterpret_cast<ImageWrapper*>(image);
     wrapper->bind_device    = reinterpret_cast<DeviceWrapper*>(device);
-    wrapper->bind_memory_id = GetWrappedId(memory);
-    wrapper->bind_offset    = memoryOffset;
+    
     wrapper->bind_call_id   = call_id;
+    ImageWrapper::BindInfo bind_info = {GetWrappedId(memory), memoryOffset};
 
     const VkBaseInStructure* next = reinterpret_cast<const VkBaseInStructure*>(pNext);
     while (next)
@@ -274,8 +274,15 @@ void VulkanStateTracker::TrackImageMemoryBinding(format::ApiCallId call_id,
                       device_group_info->pSplitInstanceBindRegions + device_group_info->splitInstanceBindRegionCount,
                       wrapper->split_instance_bind_regions.get());
         }
+        else if (next->sType == VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO)
+        {
+            auto plane_info = reinterpret_cast<const VkBindImagePlaneMemoryInfo*>(next);
+            bind_info.plane = plane_info->planeAspect;
+        }
         next = next->pNext;
     }
+    wrapper->bind_infos.push_back(bind_info);
+
 }
 
 void VulkanStateTracker::TrackMappedMemory(VkDevice         device,
