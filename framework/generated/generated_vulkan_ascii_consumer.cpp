@@ -9750,5 +9750,23 @@ void VulkanAsciiConsumer::Process_vkCmdSetRayTracingPipelineStackSizeKHR(
         }
     );
 }
+
+
+void VulkanAsciiConsumer::ProcessFillMemoryCommand(uint64_t memory_id, uint64_t offset, uint64_t size, const uint8_t* data)
+{
+    using namespace gfxrecon::util;
+    ToStringFlags toStringFlags = kToString_Default;
+    uint32_t tabCount = 0;
+    uint32_t tabSize = 4;
+    WriteApiCallToFile("ProcessFillMemoryCommand", toStringFlags, tabCount, tabSize,
+        [&](std::stringstream& strStrm)
+        {
+            FieldToString(strStrm, true, "memory_id", toStringFlags, tabCount, tabSize, HandleIdToString(memory_id));
+            FieldToString(strStrm, false, "offset", toStringFlags, tabCount, tabSize, ToString(static_cast<uint32_t>(offset)));
+            FieldToString(strStrm, false, "size", toStringFlags, tabCount, tabSize, ToString(static_cast<uint32_t>(size)));
+            FieldToString(strStrm, false, "data", toStringFlags, tabCount, tabSize, MemoryToString(size, data, toStringFlags, tabCount, tabSize));
+        }
+    );
+}
 GFXRECON_END_NAMESPACE(decode)
 GFXRECON_END_NAMESPACE(gfxrecon)

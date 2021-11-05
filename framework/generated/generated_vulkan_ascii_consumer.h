@@ -2859,6 +2859,9 @@ class VulkanAsciiConsumer : public VulkanAsciiConsumerBase
     virtual void Process_vkCmdSetRayTracingPipelineStackSizeKHR(
         format::HandleId                            commandBuffer,
         uint32_t                                    pipelineStackSize) override;
+
+    
+    virtual void ProcessFillMemoryCommand(uint64_t memory_id, uint64_t offset, uint64_t size, const uint8_t* data) override;
 };
 
 GFXRECON_END_NAMESPACE(decode)

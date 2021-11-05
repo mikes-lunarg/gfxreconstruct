@@ -25,6 +25,7 @@
 
 #include "util/defines.h"
 
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -142,6 +143,36 @@ inline std::string ArrayToString(uint32_t                  count,
                 strStrm << ',' << GetNewlineString(toStringFlags);
             }
             strStrm << GetTabString(toStringFlags, tabCount + 1, tabSize) << toStringFunction(i);
+        }
+        strStrm << GetNewlineString(toStringFlags) << GetTabString(toStringFlags, tabCount, tabSize);
+    }
+    strStrm << ']';
+    return strStrm.str();
+}
+
+inline std::string MemoryToString(uint32_t                  count,
+                                  const uint8_t*            pObjs,
+                                  ToStringFlags             toStringFlags,
+                                  uint32_t                  tabCount,
+                                  uint32_t                  tabSize)
+{
+    std::stringstream strStrm;
+    strStrm << '[';
+    if (count)
+    {
+        strStrm << std::setfill('0');
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            if (i)
+            {
+                strStrm << ',';
+            }
+            if (i % 16 == 0) {
+                strStrm << GetNewlineString(toStringFlags) << GetTabString(toStringFlags, tabCount + 1, tabSize);
+            } else {
+                strStrm << ' ';
+            }
+            strStrm << "0x" << std::setw(2) << std::hex << static_cast<unsigned>(pObjs[i]);
         }
         strStrm << GetNewlineString(toStringFlags) << GetTabString(toStringFlags, tabCount, tabSize);
     }
