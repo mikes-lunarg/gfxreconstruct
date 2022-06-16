@@ -58,7 +58,8 @@ const char kUnknownDeviceLabel[] = "<Unknown>";
 const std::unordered_set<std::string> kSurfaceExtensions = {
     VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, VK_MVK_IOS_SURFACE_EXTENSION_NAME, VK_MVK_MACOS_SURFACE_EXTENSION_NAME,
     VK_KHR_MIR_SURFACE_EXTENSION_NAME,     VK_NN_VI_SURFACE_EXTENSION_NAME,   VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
-    VK_KHR_WIN32_SURFACE_EXTENSION_NAME,   VK_KHR_XCB_SURFACE_EXTENSION_NAME, VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+    VK_KHR_WIN32_SURFACE_EXTENSION_NAME,   VK_KHR_XCB_SURFACE_EXTENSION_NAME, VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+    VK_EXT_METAL_SURFACE_EXTENSION_NAME,
 };
 
 // Device extensions to enable for trimming state setup, when available.
@@ -5739,6 +5740,27 @@ VkResult VulkanReplayConsumerBase::OverrideCreateWaylandSurfaceKHR(
     assert((replay_create_info != nullptr) && (pSurface != nullptr) && (pSurface->GetHandlePointer() != nullptr));
 
     return CreateSurface(instance_info, "VK_KHR_wayland_surface", replay_create_info->flags, pSurface);
+}
+
+VkResult VulkanReplayConsumerBase::OverrideCreateMetalSurfaceEXT(
+    PFN_vkCreateMetalSurfaceEXT                                      func,
+    VkResult                                                         original_result,
+    InstanceInfo*                                                    instance_info,
+    const StructPointerDecoder<Decoded_VkMetalSurfaceCreateInfoEXT>* pCreateInfo,
+    const StructPointerDecoder<Decoded_VkAllocationCallbacks>*       pAllocator,
+    HandlePointerDecoder<VkSurfaceKHR>*                              pSurface)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(func);
+    GFXRECON_UNREFERENCED_PARAMETER(original_result);
+    GFXRECON_UNREFERENCED_PARAMETER(pAllocator);
+
+    assert((instance_info != nullptr) && (pCreateInfo != nullptr));
+
+    auto replay_create_info = pCreateInfo->GetPointer();
+
+    assert((replay_create_info != nullptr) && (pSurface != nullptr) && (pSurface->GetHandlePointer() != nullptr));
+
+    return CreateSurface(instance_info, "VK_EXT_metal_surface", replay_create_info->flags, pSurface);
 }
 
 VkBool32 VulkanReplayConsumerBase::OverrideGetPhysicalDeviceWaylandPresentationSupportKHR(

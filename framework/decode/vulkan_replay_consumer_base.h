@@ -869,12 +869,22 @@ class VulkanReplayConsumerBase : public VulkanConsumer
                                                         uint32_t                                 groupCount,
                                                         size_t                                   dataSize,
                                                         PointerDecoder<uint8_t>*                 pData);
+
     VkResult OverrideGetAndroidHardwareBufferPropertiesANDROID(
         PFN_vkGetAndroidHardwareBufferPropertiesANDROID                         func,
         VkResult                                                                original_result,
         const DeviceInfo*                                                       device_info,
         const struct AHardwareBuffer*                                           hardware_buffer,
         StructPointerDecoder<Decoded_VkAndroidHardwareBufferPropertiesANDROID>* pProperties);
+
+    VkResult
+    OverrideCreateMetalSurfaceEXT(PFN_vkCreateMetalSurfaceEXT                                      func,
+                                  VkResult                                                         original_result,
+                                  InstanceInfo*                                                    instance_info,
+                                  const StructPointerDecoder<Decoded_VkMetalSurfaceCreateInfoEXT>* pCreateInfo,
+                                  const StructPointerDecoder<Decoded_VkAllocationCallbacks>*       pAllocator,
+                                  HandlePointerDecoder<VkSurfaceKHR>*                              pSurface);
+
 
   private:
     void RaiseFatalError(const char* message) const;

@@ -80,6 +80,7 @@
     "vkGetBufferDeviceAddressKHR": "OverrideGetBufferDeviceAddress",
     "vkGetAccelerationStructureDeviceAddressKHR": "OverrideGetAccelerationStructureDeviceAddressKHR",
     "vkGetRayTracingShaderGroupHandlesKHR": "OverrideGetRayTracingShaderGroupHandlesKHR",
-    "vkGetAndroidHardwareBufferPropertiesANDROID": "OverrideGetAndroidHardwareBufferPropertiesANDROID"
+    "vkGetAndroidHardwareBufferPropertiesANDROID": "OverrideGetAndroidHardwareBufferPropertiesANDROID",
+    "vkCreateMetalSurfaceEXT": "OverrideCreateMetalSurfaceEXT"
   }
 }
