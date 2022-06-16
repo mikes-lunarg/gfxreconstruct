@@ -139,7 +139,7 @@ endif()
 # GFXReconstruct provided find modules
 find_package(LZ4)
 find_package(ZSTD)
-if(UNIX)
+if(UNIX AND NOT APPLE)
     option(BUILD_WSI_XCB_SUPPORT "Build XCB WSI support" ON)
     option(BUILD_WSI_WAYLAND_SUPPORT "Build Wayland WSI support" ON)
     option(BUILD_WSI_DISPLAY_SUPPORT "Build direct-to-display swapchain support" ON)
@@ -151,7 +151,7 @@ if(UNIX)
     if(BUILD_WSI_WAYLAND_SUPPORT)
         find_package(WAYLAND)
     endif()
-endif(UNIX)
+endif(UNIX AND NOT APPLE)
 
 # CMake provided find modules
 if(BUILD_STATIC)
@@ -159,12 +159,12 @@ if(BUILD_STATIC)
 else()
     find_package(ZLIB)
 endif()
-if(UNIX)
+if(UNIX AND NOT APPLE)
     option(BUILD_WSI_XLIB_SUPPORT "Build Xlib WSI support" ON)
     if(BUILD_WSI_XLIB_SUPPORT)
         find_package(X11)
     endif()
-endif(UNIX)
+endif(UNIX AND NOT APPLE)
 
 add_library(windows_specific INTERFACE)
 target_compile_definitions(windows_specific INTERFACE WIN32_LEAN_AND_MEAN NOMINMAX VK_USE_PLATFORM_WIN32_KHR
@@ -182,7 +182,7 @@ target_compile_definitions(linux_specific INTERFACE _FILE_OFFSET_BITS=64 PAGE_GU
 add_library(platform_specific INTERFACE)
 target_link_libraries(platform_specific INTERFACE
     $<$<BOOL:${WIN32}>:windows_specific>
-    $<$<NOT:$<BOOL:${WIN32}>>:linux_specific>)
+    $<$<AND:$<BOOL:${UNIX}>,$<NOT:$<BOOL:${APPLE}>>>:linux_specific>)
 
 if(BUILD_WERROR)
     if(MSVC)

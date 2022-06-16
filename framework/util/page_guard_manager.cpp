@@ -117,7 +117,7 @@ static void PageGuardExceptionHandler(int id, siginfo_t* info, void* data)
 {
     bool              handled = false;
     PageGuardManager* manager = PageGuardManager::Get();
-    if ((id == SIGSEGV) && (info->si_addr != nullptr) && (manager != nullptr))
+    if ((id == SIGSEGV || id == SIGBUS) && (info->si_addr != nullptr) && (manager != nullptr))
     {
         bool is_write = true;
 #if defined(PAGE_GUARD_ENABLE_UCONTEXT_WRITE_DETECTION)
@@ -125,7 +125,12 @@ static void PageGuardExceptionHandler(int id, siginfo_t* info, void* data)
         {
             // This is a machine-specific method for detecting read vs. write access, and is not portable.
             auto ucontext = reinterpret_cast<const ucontext_t*>(data);
-#if (defined(__x86_64__) || defined(__i386__))
+#if defined(__APPLE__)
+            /*if ((ucontext->uc_mcontext->__es.__err & 0x2) == 0)
+            {
+                is_write = false;
+            }*/
+#elif (defined(__x86_64__) || defined(__i386__))
             if ((ucontext->uc_mcontext.gregs[REG_ERR] & 0x2) == 0)
             {
                 is_write = false;
@@ -374,7 +379,7 @@ void PageGuardManager::AddExceptionHandler()
 #else
         // Retrieve the current SIGSEGV handler info before replacing the current signal handler to determine if our
         // replacement signal handler should use an alternate signal stack.
-        int result = sigaction(SIGSEGV, nullptr, &s_old_sigaction);
+        int result = sigaction(SIGBUS, nullptr, &s_old_sigaction);
 
         if (result != -1)
         {
@@ -398,7 +403,7 @@ void PageGuardManager::AddExceptionHandler()
                 sa.sa_flags |= SA_ONSTACK;
             }
 
-            result = sigaction(SIGSEGV, &sa, nullptr);
+            result = sigaction(SIGBUS, &sa, nullptr);
         }
 
         if (result != -1)
@@ -450,7 +455,7 @@ void PageGuardManager::ClearExceptionHandler(void* exception_handler)
     }
 
     // Restore the old signal handler.
-    if (sigaction(SIGSEGV, &s_old_sigaction, nullptr) == -1)
+    if (sigaction(SIGBUS, &s_old_sigaction, nullptr) == -1)
     {
         GFXRECON_LOG_ERROR("PageGuardManager failed to remove exception handler (errno= %d)", errno);
     }
