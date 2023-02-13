@@ -37,7 +37,8 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libx11-xcb-dev libxcb-keysyms1-dev libwayland-dev libxrandr-dev liblz4-dev libzstd-dev
+        sudo apt-get install -y libx11-xcb-dev libxcb-keysyms1-dev libwayland-dev libxrandr-dev liblz4-dev libzstd-dev clang-format-9
+        sudo ln -sf /usr/bin/clang-format-9 /usr/bin/clang-format
     - name: Run build script
       run: |
         if [ "${{ matrix.config.type }}" == "release" ]
