@@ -108,7 +108,7 @@ class Dx12JsonConsumerBodyGenerator(Dx12JsonConsumerHeaderGenerator, Dx12JsonCom
         if(None == return_value):
             return ""
         function_name = self.choose_field_to_json_name(return_value)
-        ret_line = "{0}({1}[format::kNameReturn], return_value, options);\n"
+        ret_line = "{0}({1}[format::kNameReturn], return_value, options);\n//hello\n"
         ## if return_type.startswith("HANDLE "):
         ## This is a Windows handle, probably to a waitable object so we output it as a JSON number:
         ## <https://learn.microsoft.com/en-us/windows/win32/sysinfo/handles-and-objects>
