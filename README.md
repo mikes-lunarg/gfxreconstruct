@@ -129,3 +129,4 @@ include, for example, regression testing, silicon and platform
 bringup, and reporting bugs. Using GFXReconstruct to extract assets
 from an application or game for which you don’t have an appropriate
 license may violate copyrights or software licenses.
+
