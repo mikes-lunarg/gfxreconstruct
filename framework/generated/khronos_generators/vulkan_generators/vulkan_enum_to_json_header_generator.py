@@ -75,6 +75,9 @@ class VulkanEnumToJsonHeaderGenerator(VulkanBaseGenerator, KhronosEnumToJsonHead
             diag_file=diag_file
         )
 
+    def skip_generating_enum_to_json_for_type(self, type):
+        return 'Bits' in type
+
     # Method override
     def endFile(self):
         self.newline()

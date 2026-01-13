@@ -4235,7 +4235,7 @@ void FieldToJson(nlohmann::ordered_json& jdata, const XrWindingOrderFB& value, c
     }
 }
 
-void FieldToJson(XrAndroidSurfaceSwapchainFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrAndroidSurfaceSwapchainFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4255,7 +4255,7 @@ void FieldToJson(XrAndroidSurfaceSwapchainFlagsFB_t, nlohmann::ordered_json& jda
     });
 }
 
-void FieldToJson(XrCompositionLayerFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrCompositionLayerFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4279,7 +4279,7 @@ void FieldToJson(XrCompositionLayerFlags_t, nlohmann::ordered_json& jdata, const
     });
 }
 
-void FieldToJson(XrCompositionLayerImageLayoutFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrCompositionLayerImageLayoutFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4297,7 +4297,7 @@ void FieldToJson(XrCompositionLayerImageLayoutFlagsFB_t, nlohmann::ordered_json&
     });
 }
 
-void FieldToJson(XrCompositionLayerSecureContentFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrCompositionLayerSecureContentFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4317,7 +4317,7 @@ void FieldToJson(XrCompositionLayerSecureContentFlagsFB_t, nlohmann::ordered_jso
     });
 }
 
-void FieldToJson(XrCompositionLayerSettingsFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrCompositionLayerSettingsFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4343,7 +4343,7 @@ void FieldToJson(XrCompositionLayerSettingsFlagsFB_t, nlohmann::ordered_json& jd
     });
 }
 
-void FieldToJson(XrCompositionLayerSpaceWarpInfoFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrCompositionLayerSpaceWarpInfoFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4361,7 +4361,7 @@ void FieldToJson(XrCompositionLayerSpaceWarpInfoFlagsFB_t, nlohmann::ordered_jso
     });
 }
 
-void FieldToJson(XrDebugUtilsMessageSeverityFlagsEXT_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrDebugUtilsMessageSeverityFlagsEXTToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4385,7 +4385,7 @@ void FieldToJson(XrDebugUtilsMessageSeverityFlagsEXT_t, nlohmann::ordered_json& 
     });
 }
 
-void FieldToJson(XrDebugUtilsMessageTypeFlagsEXT_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrDebugUtilsMessageTypeFlagsEXTToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4409,7 +4409,7 @@ void FieldToJson(XrDebugUtilsMessageTypeFlagsEXT_t, nlohmann::ordered_json& jdat
     });
 }
 
-void FieldToJson(XrDigitalLensControlFlagsALMALENCE_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrDigitalLensControlFlagsALMALENCEToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4427,17 +4427,17 @@ void FieldToJson(XrDigitalLensControlFlagsALMALENCE_t, nlohmann::ordered_json& j
     });
 }
 
-void FieldToJson(XrEnvironmentDepthProviderCreateFlagsMETA_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrEnvironmentDepthProviderCreateFlagsMETAToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrEnvironmentDepthSwapchainCreateFlagsMETA_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrEnvironmentDepthSwapchainCreateFlagsMETAToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrExternalCameraStatusFlagsOCULUS_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrExternalCameraStatusFlagsOCULUSToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4463,7 +4463,7 @@ void FieldToJson(XrExternalCameraStatusFlagsOCULUS_t, nlohmann::ordered_json& jd
     });
 }
 
-void FieldToJson(XrFoveationDynamicFlagsHTC_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrFoveationDynamicFlagsHTCToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4485,12 +4485,12 @@ void FieldToJson(XrFoveationDynamicFlagsHTC_t, nlohmann::ordered_json& jdata, co
     });
 }
 
-void FieldToJson(XrFoveationEyeTrackedProfileCreateFlagsMETA_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrFoveationEyeTrackedProfileCreateFlagsMETAToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrFoveationEyeTrackedStateFlagsMETA_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrFoveationEyeTrackedStateFlagsMETAToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4508,7 +4508,7 @@ void FieldToJson(XrFoveationEyeTrackedStateFlagsMETA_t, nlohmann::ordered_json& 
     });
 }
 
-void FieldToJson(XrFrameEndInfoFlagsML_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrFrameEndInfoFlagsMLToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4528,7 +4528,7 @@ void FieldToJson(XrFrameEndInfoFlagsML_t, nlohmann::ordered_json& jdata, const X
     });
 }
 
-void FieldToJson(XrGlobalDimmerFrameEndInfoFlagsML_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrGlobalDimmerFrameEndInfoFlagsMLToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4546,7 +4546,7 @@ void FieldToJson(XrGlobalDimmerFrameEndInfoFlagsML_t, nlohmann::ordered_json& jd
     });
 }
 
-void FieldToJson(XrHandTrackingAimFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrHandTrackingAimFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4580,7 +4580,7 @@ void FieldToJson(XrHandTrackingAimFlagsFB_t, nlohmann::ordered_json& jdata, cons
     });
 }
 
-void FieldToJson(XrInputSourceLocalizedNameFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrInputSourceLocalizedNameFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4602,12 +4602,12 @@ void FieldToJson(XrInputSourceLocalizedNameFlags_t, nlohmann::ordered_json& jdat
     });
 }
 
-void FieldToJson(XrInstanceCreateFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrInstanceCreateFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrKeyboardTrackingFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrKeyboardTrackingFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4631,7 +4631,7 @@ void FieldToJson(XrKeyboardTrackingFlagsFB_t, nlohmann::ordered_json& jdata, con
     });
 }
 
-void FieldToJson(XrKeyboardTrackingQueryFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrKeyboardTrackingQueryFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4651,7 +4651,7 @@ void FieldToJson(XrKeyboardTrackingQueryFlagsFB_t, nlohmann::ordered_json& jdata
     });
 }
 
-void FieldToJson(XrLocalizationMapErrorFlagsML_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrLocalizationMapErrorFlagsMLToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4679,7 +4679,7 @@ void FieldToJson(XrLocalizationMapErrorFlagsML_t, nlohmann::ordered_json& jdata,
     });
 }
 
-void FieldToJson(XrOverlayMainSessionFlagsEXTX_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrOverlayMainSessionFlagsEXTXToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4697,12 +4697,12 @@ void FieldToJson(XrOverlayMainSessionFlagsEXTX_t, nlohmann::ordered_json& jdata,
     });
 }
 
-void FieldToJson(XrOverlaySessionCreateFlagsEXTX_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrOverlaySessionCreateFlagsEXTXToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrPassthroughCapabilityFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrPassthroughCapabilityFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4724,7 +4724,7 @@ void FieldToJson(XrPassthroughCapabilityFlagsFB_t, nlohmann::ordered_json& jdata
     });
 }
 
-void FieldToJson(XrPassthroughFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrPassthroughFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4744,7 +4744,7 @@ void FieldToJson(XrPassthroughFlagsFB_t, nlohmann::ordered_json& jdata, const Xr
     });
 }
 
-void FieldToJson(XrPassthroughPreferenceFlagsMETA_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrPassthroughPreferenceFlagsMETAToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4762,7 +4762,7 @@ void FieldToJson(XrPassthroughPreferenceFlagsMETA_t, nlohmann::ordered_json& jda
     });
 }
 
-void FieldToJson(XrPassthroughStateChangedFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrPassthroughStateChangedFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4786,7 +4786,7 @@ void FieldToJson(XrPassthroughStateChangedFlagsFB_t, nlohmann::ordered_json& jda
     });
 }
 
-void FieldToJson(XrPerformanceMetricsCounterFlagsMETA_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrPerformanceMetricsCounterFlagsMETAToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4808,7 +4808,7 @@ void FieldToJson(XrPerformanceMetricsCounterFlagsMETA_t, nlohmann::ordered_json&
     });
 }
 
-void FieldToJson(XrPlaneDetectionCapabilityFlagsEXT_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrPlaneDetectionCapabilityFlagsEXTToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4838,7 +4838,7 @@ void FieldToJson(XrPlaneDetectionCapabilityFlagsEXT_t, nlohmann::ordered_json& j
     });
 }
 
-void FieldToJson(XrPlaneDetectorFlagsEXT_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrPlaneDetectorFlagsEXTToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4856,7 +4856,7 @@ void FieldToJson(XrPlaneDetectorFlagsEXT_t, nlohmann::ordered_json& jdata, const
     });
 }
 
-void FieldToJson(XrRenderModelFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrRenderModelFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4876,7 +4876,7 @@ void FieldToJson(XrRenderModelFlagsFB_t, nlohmann::ordered_json& jdata, const Xr
     });
 }
 
-void FieldToJson(XrSemanticLabelsSupportFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSemanticLabelsSupportFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4898,12 +4898,12 @@ void FieldToJson(XrSemanticLabelsSupportFlagsFB_t, nlohmann::ordered_json& jdata
     });
 }
 
-void FieldToJson(XrSessionCreateFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSessionCreateFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrSpaceLocationFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSpaceLocationFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4927,7 +4927,7 @@ void FieldToJson(XrSpaceLocationFlags_t, nlohmann::ordered_json& jdata, const Xr
     });
 }
 
-void FieldToJson(XrSpaceVelocityFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSpaceVelocityFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4947,7 +4947,7 @@ void FieldToJson(XrSpaceVelocityFlags_t, nlohmann::ordered_json& jdata, const Xr
     });
 }
 
-void FieldToJson(XrSwapchainCreateFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSwapchainCreateFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4967,7 +4967,7 @@ void FieldToJson(XrSwapchainCreateFlags_t, nlohmann::ordered_json& jdata, const 
     });
 }
 
-void FieldToJson(XrSwapchainCreateFoveationFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSwapchainCreateFoveationFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -4987,12 +4987,12 @@ void FieldToJson(XrSwapchainCreateFoveationFlagsFB_t, nlohmann::ordered_json& jd
     });
 }
 
-void FieldToJson(XrSwapchainStateFoveationFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSwapchainStateFoveationFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrSwapchainUsageFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrSwapchainUsageFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -5024,7 +5024,7 @@ void FieldToJson(XrSwapchainUsageFlags_t, nlohmann::ordered_json& jdata, const X
     });
 }
 
-void FieldToJson(XrTriangleMeshFlagsFB_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrTriangleMeshFlagsFBToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -5042,7 +5042,7 @@ void FieldToJson(XrTriangleMeshFlagsFB_t, nlohmann::ordered_json& jdata, const X
     });
 }
 
-void FieldToJson(XrViewStateFlags_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrViewStateFlagsToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -5066,7 +5066,7 @@ void FieldToJson(XrViewStateFlags_t, nlohmann::ordered_json& jdata, const XrFlag
     });
 }
 
-void FieldToJson(XrVirtualKeyboardInputStateFlagsMETA_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrVirtualKeyboardInputStateFlagsMETAToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     if (!options.expand_flags)
     {
@@ -5084,12 +5084,12 @@ void FieldToJson(XrVirtualKeyboardInputStateFlagsMETA_t, nlohmann::ordered_json&
     });
 }
 
-void FieldToJson(XrVulkanDeviceCreateFlagsKHR_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrVulkanDeviceCreateFlagsKHRToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
 
-void FieldToJson(XrVulkanInstanceCreateFlagsKHR_t, nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
+void XrVulkanInstanceCreateFlagsKHRToJson(nlohmann::ordered_json& jdata, const XrFlags64 flags, const JsonOptions& options)
 {
     jdata = to_hex_fixed_width(flags);
 }
