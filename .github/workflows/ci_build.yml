@@ -66,6 +66,7 @@ jobs:
           python3 scripts/build.py --config ${{ matrix.config.type }} --skip-check-code-style --parallel 0 --test-apps
         fi
       env:
+        SCCACHE_RECACHE: on
         SCCACHE_GHA_ENABLED: on
         CMAKE_C_COMPILER_LAUNCHER: sccache
         CMAKE_CXX_COMPILER_LAUNCHER: sccache
@@ -218,6 +219,7 @@ jobs:
       run: |
         python3 scripts/build.py --skip-check-code-style --config ${{ matrix.config.type }} --cmake-extra "CMAKE_PREFIX_PATH=$HOME/deps" --cmake-extra CMAKE_OSX_DEPLOYMENT_TARGET=13.3 --parallel 0 --test-apps
       env:
+        SCCACHE_RECACHE: on
         SCCACHE_GHA_ENABLED: on
         SCCACHE_CACHE_MULTIARCH: on
         SCCACHE_IDLE_TIMEOUT: 0
@@ -314,6 +316,7 @@ jobs:
             sh gradlew assembleDebug -Parm64-v8a
           fi
         env:
+          SCCACHE_RECACHE: on
           SCCACHE_GHA_ENABLED: on
           CMAKE_C_COMPILER_LAUNCHER: sccache
           CMAKE_CXX_COMPILER_LAUNCHER: sccache
