@@ -29,7 +29,6 @@
 
 #ifndef  GFXRECON_GENERATED_VULKAN_API_CALL_ENCODERS_H
 #define  GFXRECON_GENERATED_VULKAN_API_CALL_ENCODERS_H
-
 #include "format/platform_types.h"
 #include "util/defines.h"
 

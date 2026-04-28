@@ -27,7 +27,6 @@
 
 #ifndef  GFXRECON_GENERATED_DX12_ADD_ENTRIES_H
 #define  GFXRECON_GENERATED_DX12_ADD_ENTRIES_H
-
 #include "generated/generated_dx12_wrapper_creators.h"
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
