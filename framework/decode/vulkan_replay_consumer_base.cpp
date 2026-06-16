@@ -199,8 +199,7 @@ static uint32_t GetHardwareBufferFormatBpp(uint32_t format)
 
 VulkanReplayConsumerBase::VulkanReplayConsumerBase(std::shared_ptr<application::Application> application,
                                                    const VulkanReplayOptions&                options) :
-    options_(options),
-    loader_handle_(nullptr), get_instance_proc_addr_(nullptr), create_instance_proc_(nullptr),
+    options_(options), loader_handle_(nullptr), get_instance_proc_addr_(nullptr), create_instance_proc_(nullptr),
     application_(application), loading_trim_state_(false), replaying_trimmed_capture_(false), fps_info_(nullptr),
     have_imported_semaphores_(false), omitted_pipeline_cache_data_(false),
     save_pipeline_caches_to_file(!options.save_pipeline_cache_filename.empty()),
@@ -7907,10 +7906,10 @@ VkResult VulkanReplayConsumerBase::OverrideCreateSwapchainKHR(
         }
 
         // check if 'replay_create_info->imageFormat' is supported,
-        // do nothing if we got no information about available surfaces
-        bool surface_format_supported = !physical_device_info->surface_formats;
+        bool surface_format_supported = false;
         if (physical_device_info->surface_formats)
         {
+            // If surface formats are already queried, use them to check if the format is supported.
             for (const auto& supported : *physical_device_info->surface_formats)
             {
                 if (supported.format == replay_create_info->imageFormat)
@@ -7919,6 +7918,28 @@ VkResult VulkanReplayConsumerBase::OverrideCreateSwapchainKHR(
                     break;
                 }
             }
+        }
+        else
+        {
+            // If surface formats are not queried before, query them now to check if the format is supported.
+            const auto instance_table = GetInstanceTable(physical_device_info->handle);
+            util::BeginInjectedCommands();
+            uint32_t surface_format_count = 0;
+            instance_table->GetPhysicalDeviceSurfaceFormatsKHR(
+                physical_device_info->handle, modified_create_info.surface, &surface_format_count, nullptr);
+            std::vector<VkSurfaceFormatKHR> surface_formats(surface_format_count);
+            if (surface_format_count > 0)
+            {
+                instance_table->GetPhysicalDeviceSurfaceFormatsKHR(physical_device_info->handle,
+                                                                   modified_create_info.surface,
+                                                                   &surface_format_count,
+                                                                   surface_formats.data());
+            }
+            util::EndInjectedCommands();
+            surface_format_supported =
+                std::any_of(surface_formats.begin(), surface_formats.end(), [&](const VkSurfaceFormatKHR& supported) {
+                    return supported.format == replay_create_info->imageFormat;
+                });
         }
 
         if (!surface_format_supported)
@@ -7945,8 +7966,8 @@ VkResult VulkanReplayConsumerBase::OverrideCreateSwapchainKHR(
             // fallback to a safe surface-format
             modified_create_info.imageFormat = fallback_color_formats[0];
             GFXRECON_LOG_WARNING_ONCE(
-                "Replay adjusted unsupported surface imageFormat (%d) to VK_FORMAT_B8G8R8A8_UNORM",
-                replay_create_info->imageFormat);
+                "Replay adjusted unsupported surface imageFormat (%s) to VK_FORMAT_B8G8R8A8_UNORM",
+                util::ToString<VkFormat>(replay_create_info->imageFormat).c_str());
         }
 
         if (colorspace_extension_used_unsupported)
