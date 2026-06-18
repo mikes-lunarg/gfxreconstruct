@@ -135,7 +135,8 @@ int main(int argc, const char** argv)
                                          arg_parser,
                                          filename,
                                          gfxrecon::util::platform::GetEnv(kLayerEnvVar),
-                                         make_application))
+                                         make_application,
+                                         &remote_channel))
         {
             return_code = -1;
         }

@@ -46,6 +46,11 @@ struct android_app;
 #endif
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
+
+GFXRECON_BEGIN_NAMESPACE(util)
+class RemoteChannel;
+GFXRECON_END_NAMESPACE(util)
+
 GFXRECON_BEGIN_NAMESPACE(application)
 
 class Application final
@@ -126,6 +131,10 @@ class Application final
             replay_event_sink ? std::move(replay_event_sink) : std::make_unique<plugin::NullReplayEventSink>();
     }
 
+    // Set an optional, non-owning channel used to report per-frame replay progress to a remote controller. Pass
+    // nullptr (the default) to disable progress reporting.
+    void SetRemoteChannel(util::RemoteChannel* remote_channel) { remote_channel_ = remote_channel; }
+
   private:
     bool IsFrameProcessingInitialized() const
     {
@@ -153,6 +162,8 @@ class Application final
                                                                                      ///< capture file data.
 
     std::unique_ptr<plugin::ReplayEventSink> replay_event_sink_ = std::make_unique<plugin::NullReplayEventSink>();
+
+    util::RemoteChannel* remote_channel_ = nullptr; ///< Optional, non-owning channel for reporting replay progress.
 
 #if defined(__ANDROID__)
     struct android_app* android_app_{nullptr};

@@ -131,7 +131,7 @@ void android_main(struct android_app* app)
             };
 
             success = gfxrecon::replay::RunReplay(
-                g_file_processor, g_features, arg_parser, filename, kLayerProperty, make_application);
+                g_file_processor, g_features, arg_parser, filename, kLayerProperty, make_application, &remote_channel);
         }
         catch (std::runtime_error& error)
         {

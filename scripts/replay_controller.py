@@ -103,6 +103,7 @@ def handle_session(conn, replay_args, output_dir):
         return False
 
     success = False
+    prev_msg_type = None
     while True:
         frame = recv_frame(conn)
         if frame is None:
@@ -115,6 +116,10 @@ def handle_session(conn, replay_args, output_dir):
         if msg_type == 'log':
             print(f"[{msg.get('level', '?'):7}] {msg.get('message', '')}")
         elif msg_type == 'progress':
+            if prev_msg_type == 'progress':
+                print(
+                    f"\033[F", end=''
+                )  # Move cursor up one line to overwrite previous progress
             print(f"--- progress: frame {msg.get('frame')}")
         elif msg_type == 'file':
             # A "file" message is always followed by a raw binary frame.
@@ -129,6 +134,8 @@ def handle_session(conn, replay_args, output_dir):
             break
         else:
             print(f'Unknown message: {msg}', file=sys.stderr)
+
+        prev_msg_type = msg_type
 
     return success
 
