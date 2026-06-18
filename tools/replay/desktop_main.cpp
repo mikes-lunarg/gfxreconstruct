@@ -146,7 +146,8 @@ int main(int argc, const char** argv)
             return std::make_shared<gfxrecon::application::Application>(kApplicationName, fp, wsi_extension, nullptr);
         };
 
-        if (!gfxrecon::replay::RunReplay(file_processor, features, arg_parser, filename, make_application))
+        if (!gfxrecon::replay::RunReplay(
+                file_processor, features, arg_parser, filename, make_application, &remote_channel))
         {
             return_code = -1;
         }

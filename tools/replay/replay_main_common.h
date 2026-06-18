@@ -88,11 +88,14 @@ void RunPreProcessConsumer(const std::string& filename, std::vector<std::unique_
 //                     global reference so the extern "C" query callbacks work.
 // make_application    Platform factory called with the new FileProcessor
 //                     pointer; should return a fully constructed Application.
+// remote_channel        Optional, non-owning channel used to report per-frame
+//                       replay progress to a controller; nullptr disables it.
 bool RunReplay(std::unique_ptr<decode::FileProcessor>&                                          file_processor_out,
                std::vector<std::unique_ptr<ReplayFeatureBase>>&                                 features,
                util::ArgumentParser&                                                            arg_parser,
                const std::string&                                                               filename,
-               std::function<std::shared_ptr<application::Application>(decode::FileProcessor*)> make_application);
+               std::function<std::shared_ptr<application::Application>(decode::FileProcessor*)> make_application,
+               util::RemoteChannel* remote_channel = nullptr);
 
 GFXRECON_END_NAMESPACE(replay)
 GFXRECON_END_NAMESPACE(gfxrecon)

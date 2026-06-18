@@ -146,7 +146,8 @@ void android_main(struct android_app* app)
                     kApplicationName, fp, VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, app);
             };
 
-            success = gfxrecon::replay::RunReplay(g_file_processor, g_features, arg_parser, filename, make_application);
+            success = gfxrecon::replay::RunReplay(
+                g_file_processor, g_features, arg_parser, filename, make_application, &remote_channel);
         }
         catch (std::runtime_error& error)
         {
