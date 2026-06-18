@@ -27,6 +27,8 @@
 #include "decode/preload_file_processor.h"
 #include "graphics/frame_loop_info.h"
 #include "util/feature_module_registry.h"
+#include "util/logging.h"
+#include "util/remote_channel.h"
 
 #if defined(__ANDROID__)
 #include <android_native_app_glue.h>
@@ -41,6 +43,37 @@ GFXRECON_BEGIN_NAMESPACE(replay)
 // The list that the last LoadFeatures() call filled. GetLoadedFeatures() gives it to the usage
 // function of the tool, which cannot receive the list as a parameter.
 static const std::vector<std::unique_ptr<ReplayFeatureBase>>* g_loaded_features = nullptr;
+
+RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::ArgumentParser& arg_parser)
+{
+    if (!arg_parser.IsArgumentSet("--remote"))
+    {
+        return RemoteSetupResult::kNotRequested;
+    }
+
+    // Connect() and Handshake() log the specific reason for any failure, so no additional message is needed here.
+    const std::string address = arg_parser.GetArgumentValue("--remote");
+    if (!channel.Connect(address))
+    {
+        return RemoteSetupResult::kFailed;
+    }
+
+    std::string remote_args = channel.Handshake();
+    if (remote_args.empty())
+    {
+        return RemoteSetupResult::kFailed;
+    }
+
+    // Replace the local arguments with the settings provided by the controller.
+    arg_parser = util::ArgumentParser(false, remote_args.c_str(), kOptions, kArguments);
+
+    return RemoteSetupResult::kConnected;
+}
+
+void ShutdownRemoteChannel(util::RemoteChannel& channel, bool success)
+{
+    channel.SendDone(success);
+}
 
 void LoadFeatures(std::vector<std::unique_ptr<ReplayFeatureBase>>& features)
 {

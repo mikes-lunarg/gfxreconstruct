@@ -1,0 +1,91 @@
+/*
+** Copyright (c) 2026 LunarG, Inc.
+**
+** Permission is hereby granted, free of charge, to any person obtaining a
+** copy of this software and associated documentation files (the "Software"),
+** to deal in the Software without restriction, including without limitation
+** the rights to use, copy, modify, merge, publish, distribute, sublicense,
+** and/or sell copies of the Software, and to permit persons to whom the
+** Software is furnished to do so, subject to the following conditions:
+**
+** The above copyright notice and this permission notice shall be included in
+** all copies or substantial portions of the Software.
+**
+** THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+** IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+** FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+** AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+** LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+** FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+** DEALINGS IN THE SOFTWARE.
+*/
+
+#ifndef GFXRECON_UTIL_REMOTE_CHANNEL_H
+#define GFXRECON_UTIL_REMOTE_CHANNEL_H
+
+#include "util/defines.h"
+#include "util/logging_common.h"
+
+#include "nlohmann/json.hpp"
+
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <vector>
+
+GFXRECON_BEGIN_NAMESPACE(gfxrecon)
+GFXRECON_BEGIN_NAMESPACE(util)
+
+// RemoteChannel connects gfxrecon-replay (the client) to a controller process (the server) over a socket for
+// bidirectional I/O. The controller sends replay settings; replay sends back log messages, progress, screenshots, and
+// dump-resources files.
+//
+// Wire format: each frame is a little-endian uint32_t length prefix followed by that many payload bytes. Structured
+// messages are JSON frames. A binary file payload is sent as a JSON "file" metadata frame immediately followed by a raw
+// binary frame.
+//
+// On platforms without socket support (e.g. Windows), all methods are no-ops and IsConnected() returns false.
+class RemoteChannel
+{
+  public:
+    RemoteChannel() = default;
+    ~RemoteChannel() { Disconnect(); }
+
+    RemoteChannel(const RemoteChannel&)            = delete;
+    RemoteChannel& operator=(const RemoteChannel&) = delete;
+
+    // Connect to the controller. Address forms:
+    //   "tcp:host:port"  - TCP connection (desktop)
+    //   "unix:@name"     - abstract Unix domain socket (Linux/Android)
+    //   "unix:/path"     - filesystem-backed Unix domain socket
+    // Returns true on success.
+    bool Connect(const std::string& address);
+
+    bool IsConnected() const;
+    void Disconnect();
+
+    // Perform the startup handshake. Sends "hello", waits for a "settings" message, then sends "ready". Returns the
+    // controller-supplied CLI args string, or "" if the handshake failed.
+    std::string Handshake();
+
+    // The following are thread-safe and are no-ops when disconnected.
+    void SendJson(const nlohmann::json& msg);
+    void SendFile(const std::string& name, const void* data, size_t size);
+    void SendLog(LoggingSeverity severity, const std::string& message);
+    void SendProgress(uint64_t frame);
+    void SendDone(bool success); // Also calls Disconnect().
+
+  private:
+    bool SendFrame(const void* data, uint32_t size);
+    bool RecvFrame(std::vector<uint8_t>& out);
+    bool SendAll(const void* buf, size_t size);
+    bool RecvExact(void* buf, size_t size);
+
+    int        fd_{ -1 };
+    std::mutex send_mutex_;
+};
+
+GFXRECON_END_NAMESPACE(util)
+GFXRECON_END_NAMESPACE(gfxrecon)
+
+#endif // GFXRECON_UTIL_REMOTE_CHANNEL_H
