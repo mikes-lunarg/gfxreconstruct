@@ -526,6 +526,11 @@ void RemoteChannel::LogSendQueueStats() const
                     static_cast<double>(stat_stall_ns_.load()) / 1e6);
 }
 
+void RemoteChannel::SendProgress(uint64_t frame)
+{
+    SendJson({ { "type", "progress" }, { "frame", frame } });
+}
+
 void RemoteChannel::SendDone(bool success)
 {
     SendJson({ { "type", "done" }, { "success", success } });

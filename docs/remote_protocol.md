@@ -77,6 +77,7 @@ replay     → controller:  {"type":"ready"}
 ### Replay → controller
 
 ```json
+{"type":"progress","frame":42}
 {"type":"file","name":"dump/frame_0042.png","size":204800}
 <204800 raw bytes — separate binary frame, no encoding>
 {"type":"done","success":true}
@@ -115,6 +116,10 @@ re-normalized, and fails the handshake instead of printing usage text.
 
 The same payload shape will carry capture-side settings, whose native model is
 already a `<string, string>` map. The key sets are disjoint; the shape is not.
+
+## Progress Messages
+
+- **Frame-level** — `{"type":"progress","frame":N}`, emitted per replayed frame.
 
 ## File Streaming
 

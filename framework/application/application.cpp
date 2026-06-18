@@ -24,6 +24,7 @@
 #include "application/application.h"
 #include "util/logging.h"
 #include "util/platform.h"
+#include "util/remote_channel.h"
 #include "decode/preload_file_processor.h"
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
@@ -303,6 +304,11 @@ bool Application::PlaySingleFrame()
 
         if (success)
         {
+            if (remote_channel_ != nullptr)
+            {
+                remote_channel_->SendProgress(file_processor_->GetCurrentFrameNumber());
+            }
+
             if (file_processor_->GetCurrentFrameNumber() == pause_frame_)
             {
                 paused_ = true;

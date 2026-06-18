@@ -96,6 +96,7 @@ class RemoteChannel
     // applies backpressure once the queue is full (see kSendQueueLimit).
     void SendJson(const nlohmann::json& msg);
     void SendFile(const std::string& name, const void* data, size_t size);
+    void SendProgress(uint64_t frame);
     void SendDone(bool success); // Also calls Disconnect().
 
     // Log how often, and for how long, file sends stalled waiting on socket backpressure. Call before SendDone so the
