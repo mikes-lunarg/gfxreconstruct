@@ -28,6 +28,7 @@
 #include "application/application.h"
 #include "decode/file_processor.h"
 #include "util/logging.h"
+#include "util/remote_channel.h"
 #include "parse_dump_resources_cli.h"
 
 #include <exception>
@@ -86,6 +87,17 @@ int main(int argc, const char** argv)
 
     gfxrecon::util::ArgumentParser arg_parser(argc, argv, kOptions, kArguments);
 
+    // If --remote is specified, connect to the controller, which supplies the replay settings. Because the user
+    // explicitly requested remote control, treat any failure to establish it as fatal rather than silently falling
+    // back to the command-line arguments.
+    gfxrecon::util::RemoteChannel remote_channel;
+    if (gfxrecon::replay::SetupRemoteChannel(remote_channel, arg_parser) ==
+        gfxrecon::replay::RemoteSetupResult::kFailed)
+    {
+        gfxrecon::util::Log::Release();
+        exit(-1);
+    }
+
     if (CheckOptionPrintFeatureVersions<gfxrecon::replay::ReplayFeatureBase>(argv[0], arg_parser) ||
         CheckOptionPrintUsage(argv[0], arg_parser))
     {
@@ -143,6 +155,9 @@ int main(int argc, const char** argv)
         GFXRECON_WRITE_CONSOLE("Replay failed due to an unhandled exception");
         return_code = -1;
     }
+
+    // Notify the controller that replay is complete. A no-op when no remote controller is connected.
+    gfxrecon::replay::ShutdownRemoteChannel(remote_channel, return_code == 0);
 
     WaitForExit();
 

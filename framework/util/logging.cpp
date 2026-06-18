@@ -226,6 +226,32 @@ void LoggingManager::UpdateDebugViewTarget(bool enabled)
 #endif // defined(_WIN32)
 }
 
+void LoggingManager::UpdateCallbackTarget(bool                                                     enabled,
+                                          std::function<void(LoggingSeverity, const std::string&)> callback)
+{
+    const std::lock_guard<std::mutex> lock(target_mut_);
+
+    if (enabled)
+    {
+        if (!logging_targets_[kTarget_Callback])
+        {
+            logging_targets_[kTarget_Callback] = std::make_unique<logging::LoggingTargetCallback>();
+            GFXRECON_ASSERT(logging_targets_[kTarget_Callback]);
+        }
+
+        auto* target = static_cast<logging::LoggingTargetCallback*>(logging_targets_[kTarget_Callback].get());
+        target->SetCallback(std::move(callback));
+        target->SetEnable(true);
+        target->SetSeverity(minimum_severity_);
+    }
+    else if (logging_targets_[kTarget_Callback])
+    {
+        // Disable and drop the callback so the now-stale target holds no reference to it.
+        logging_targets_[kTarget_Callback]->SetEnable(false);
+        static_cast<logging::LoggingTargetCallback*>(logging_targets_[kTarget_Callback].get())->SetCallback(nullptr);
+    }
+}
+
 GFXRECON_END_NAMESPACE(logging)
 
 Log::Settings      Log::settings_;
@@ -347,6 +373,12 @@ void Log::UpdateWithSettings(const util::Log::Settings& settings)
 
     // Update the log targets as necessary
     UpdateLogManagerComponents(log_mgr);
+}
+
+void Log::SetLogCallback(std::function<void(LoggingSeverity, const std::string&)> fn)
+{
+    const bool enabled = static_cast<bool>(fn);
+    logging::LoggingManager::GetSingleton().UpdateCallbackTarget(enabled, std::move(fn));
 }
 
 void Log::LogMessage(

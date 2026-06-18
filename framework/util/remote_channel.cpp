@@ -1,0 +1,459 @@
+/*
+** Copyright (c) 2026 LunarG, Inc.
+**
+** Permission is hereby granted, free of charge, to any person obtaining a
+** copy of this software and associated documentation files (the "Software"),
+** to deal in the Software without restriction, including without limitation
+** the rights to use, copy, modify, merge, publish, distribute, sublicense,
+** and/or sell copies of the Software, and to permit persons to whom the
+** Software is furnished to do so, subject to the following conditions:
+**
+** The above copyright notice and this permission notice shall be included in
+** all copies or substantial portions of the Software.
+**
+** THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+** IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+** FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+** AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+** LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+** FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+** DEALINGS IN THE SOFTWARE.
+*/
+
+#include "util/remote_channel.h"
+
+#include "util/logging.h"
+
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstddef>
+#include <cstring>
+
+// macOS does not define MSG_NOSIGNAL; it uses the SO_NOSIGPIPE socket option instead (set in SetNoSigPipe below).
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+#endif
+
+GFXRECON_BEGIN_NAMESPACE(gfxrecon)
+GFXRECON_BEGIN_NAMESPACE(util)
+
+#if !defined(_WIN32)
+
+namespace
+{
+// Suppress SIGPIPE on platforms that signal it instead of honoring MSG_NOSIGNAL (e.g. macOS).
+void SetNoSigPipe(int fd)
+{
+#ifdef SO_NOSIGPIPE
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#else
+    GFXRECON_UNREFERENCED_PARAMETER(fd);
+#endif
+}
+
+// Convert a LoggingSeverity to the lowercase level string used in the wire protocol.
+const char* SeverityToLevelString(LoggingSeverity severity)
+{
+    switch (severity)
+    {
+        case LoggingSeverity::kVerbose:
+            return "verbose";
+        case LoggingSeverity::kDebug:
+            return "debug";
+        case LoggingSeverity::kInfo:
+            return "info";
+        case LoggingSeverity::kWarning:
+            return "warning";
+        case LoggingSeverity::kError:
+            return "error";
+        case LoggingSeverity::kFatal:
+            return "fatal";
+        default:
+            return "info";
+    }
+}
+
+// Connect a TCP socket described by "host:port". Returns a connected fd, or -1 on failure.
+int ConnectTcp(const std::string& host_port)
+{
+    size_t colon = host_port.find_last_of(':');
+    if (colon == std::string::npos)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: invalid TCP address '%s' (expected host:port)", host_port.c_str());
+        return -1;
+    }
+
+    std::string host = host_port.substr(0, colon);
+    std::string port = host_port.substr(colon + 1);
+
+    addrinfo hints    = {};
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    addrinfo* results = nullptr;
+    int       err     = getaddrinfo(host.c_str(), port.c_str(), &hints, &results);
+    if (err != 0)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to resolve '%s': %s", host_port.c_str(), gai_strerror(err));
+        return -1;
+    }
+
+    int fd = -1;
+    for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next)
+    {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == -1)
+        {
+            continue;
+        }
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0)
+        {
+            SetNoSigPipe(fd);
+            break;
+        }
+        close(fd);
+        fd = -1;
+    }
+
+    freeaddrinfo(results);
+
+    if (fd == -1)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to connect to '%s'", host_port.c_str());
+    }
+    return fd;
+}
+
+// Connect a Unix domain socket. A leading '@' in name selects the abstract namespace. Returns a connected fd, or -1 on
+// failure.
+int ConnectUnix(const std::string& name)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd == -1)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to create Unix socket: %s", strerror(errno));
+        return -1;
+    }
+
+    sockaddr_un addr = {};
+    addr.sun_family  = AF_UNIX;
+
+    socklen_t addrlen = 0;
+    if (!name.empty() && name[0] == '@')
+    {
+        // Abstract socket: leading null byte, name starts at sun_path[1], no trailing null.
+        std::string abstract_name = name.substr(1);
+        if (abstract_name.size() + 1 > sizeof(addr.sun_path))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: abstract socket name '%s' is too long", name.c_str());
+            close(fd);
+            return -1;
+        }
+        addr.sun_path[0] = '\0';
+        memcpy(addr.sun_path + 1, abstract_name.data(), abstract_name.size());
+        addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + abstract_name.size());
+    }
+    else
+    {
+        if (name.size() + 1 > sizeof(addr.sun_path))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: Unix socket path '%s' is too long", name.c_str());
+            close(fd);
+            return -1;
+        }
+        memcpy(addr.sun_path, name.data(), name.size());
+        addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + name.size() + 1);
+    }
+
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), addrlen) != 0)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to connect to Unix socket '%s': %s", name.c_str(), strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    SetNoSigPipe(fd);
+    return fd;
+}
+} // namespace
+
+bool RemoteChannel::Connect(const std::string& address)
+{
+    Disconnect();
+
+    constexpr const char kTcpPrefix[]  = "tcp:";
+    constexpr const char kUnixPrefix[] = "unix:";
+
+    if (address.rfind(kTcpPrefix, 0) == 0)
+    {
+        fd_ = ConnectTcp(address.substr(sizeof(kTcpPrefix) - 1));
+    }
+    else if (address.rfind(kUnixPrefix, 0) == 0)
+    {
+        fd_ = ConnectUnix(address.substr(sizeof(kUnixPrefix) - 1));
+    }
+    else
+    {
+        GFXRECON_LOG_ERROR("Remote channel: unrecognized address '%s' (expected tcp: or unix: prefix)",
+                           address.c_str());
+        return false;
+    }
+
+    return fd_ != -1;
+}
+
+bool RemoteChannel::IsConnected() const
+{
+    return fd_ != -1;
+}
+
+void RemoteChannel::Disconnect()
+{
+    if (fd_ != -1)
+    {
+        close(fd_);
+        fd_ = -1;
+    }
+}
+
+std::string RemoteChannel::Handshake()
+{
+    if (fd_ == -1)
+    {
+        return "";
+    }
+
+    SendJson({ { "type", "hello" }, { "version", "1" } });
+
+    // Bound the handshake receive so a missing/unresponsive controller does not hang startup.
+    timeval timeout = {};
+    timeout.tv_sec  = 5;
+    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    std::vector<uint8_t> frame;
+    if (!RecvFrame(frame))
+    {
+        GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for settings");
+        return "";
+    }
+
+    std::string    args;
+    nlohmann::json msg = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
+    if (msg.is_discarded() || !msg.contains("type") || msg["type"] != "settings")
+    {
+        GFXRECON_LOG_ERROR("Remote channel: handshake received unexpected message");
+        return "";
+    }
+    args = msg.value("args", std::string());
+    if (args.empty())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: controller provided empty settings args");
+        return "";
+    }
+
+    SendJson({ { "type", "ready" } });
+
+    return args;
+}
+
+void RemoteChannel::SendJson(const nlohmann::json& msg)
+{
+    if (fd_ == -1)
+    {
+        return;
+    }
+
+    std::string                       payload = msg.dump();
+    const std::lock_guard<std::mutex> lock(send_mutex_);
+    SendFrame(payload.data(), static_cast<uint32_t>(payload.size()));
+}
+
+void RemoteChannel::SendFile(const std::string& name, const void* data, size_t size)
+{
+    if (fd_ == -1)
+    {
+        return;
+    }
+
+    nlohmann::json header  = { { "type", "file" }, { "name", name }, { "size", size } };
+    std::string    payload = header.dump();
+
+    // Hold the lock across both frames so the JSON header and binary data are never interleaved with other senders.
+    const std::lock_guard<std::mutex> lock(send_mutex_);
+    SendFrame(payload.data(), static_cast<uint32_t>(payload.size()));
+    SendFrame(data, static_cast<uint32_t>(size));
+}
+
+void RemoteChannel::SendLog(LoggingSeverity severity, const std::string& message)
+{
+    SendJson({ { "type", "log" }, { "level", SeverityToLevelString(severity) }, { "message", message } });
+}
+
+void RemoteChannel::SendProgress(uint64_t frame)
+{
+    SendJson({ { "type", "progress" }, { "frame", frame } });
+}
+
+void RemoteChannel::SendDone(bool success)
+{
+    SendJson({ { "type", "done" }, { "success", success } });
+    Disconnect();
+}
+
+bool RemoteChannel::SendFrame(const void* data, uint32_t size)
+{
+    uint32_t length = size; // All target devices are little-endian; no byte-swap needed.
+    if (!SendAll(&length, sizeof(length)))
+    {
+        return false;
+    }
+    return SendAll(data, size);
+}
+
+bool RemoteChannel::RecvFrame(std::vector<uint8_t>& out)
+{
+    uint32_t length = 0;
+    if (!RecvExact(&length, sizeof(length)))
+    {
+        return false;
+    }
+
+    out.resize(length);
+    if (length == 0)
+    {
+        return true;
+    }
+    return RecvExact(out.data(), length);
+}
+
+bool RemoteChannel::SendAll(const void* buf, size_t size)
+{
+    const uint8_t* ptr       = static_cast<const uint8_t*>(buf);
+    size_t         remaining = size;
+    while (remaining > 0)
+    {
+        ssize_t sent = send(fd_, ptr, remaining, MSG_NOSIGNAL);
+        if (sent <= 0)
+        {
+            if (sent < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            return false;
+        }
+        ptr += sent;
+        remaining -= static_cast<size_t>(sent);
+    }
+    return true;
+}
+
+bool RemoteChannel::RecvExact(void* buf, size_t size)
+{
+    uint8_t* ptr       = static_cast<uint8_t*>(buf);
+    size_t   remaining = size;
+    while (remaining > 0)
+    {
+        ssize_t received = recv(fd_, ptr, remaining, 0);
+        if (received <= 0)
+        {
+            if (received < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            return false;
+        }
+        ptr += received;
+        remaining -= static_cast<size_t>(received);
+    }
+    return true;
+}
+
+#else // WIN32: socket transport is not supported; all methods are no-ops.
+
+bool RemoteChannel::Connect(const std::string& address)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(address);
+    return false;
+}
+
+bool RemoteChannel::IsConnected() const
+{
+    return false;
+}
+
+void RemoteChannel::Disconnect() {}
+
+std::string RemoteChannel::Handshake()
+{
+    return "";
+}
+
+void RemoteChannel::SendJson(const nlohmann::json& msg)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(msg);
+}
+
+void RemoteChannel::SendFile(const std::string& name, const void* data, size_t size)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(name);
+    GFXRECON_UNREFERENCED_PARAMETER(data);
+    GFXRECON_UNREFERENCED_PARAMETER(size);
+}
+
+void RemoteChannel::SendLog(LoggingSeverity severity, const std::string& message)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(severity);
+    GFXRECON_UNREFERENCED_PARAMETER(message);
+}
+
+void RemoteChannel::SendProgress(uint64_t frame)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(frame);
+}
+
+void RemoteChannel::SendDone(bool success)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(success);
+}
+
+bool RemoteChannel::SendFrame(const void* data, uint32_t size)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(data);
+    GFXRECON_UNREFERENCED_PARAMETER(size);
+    return false;
+}
+
+bool RemoteChannel::RecvFrame(std::vector<uint8_t>& out)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(out);
+    return false;
+}
+
+bool RemoteChannel::SendAll(const void* buf, size_t size)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(buf);
+    GFXRECON_UNREFERENCED_PARAMETER(size);
+    return false;
+}
+
+bool RemoteChannel::RecvExact(void* buf, size_t size)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(buf);
+    GFXRECON_UNREFERENCED_PARAMETER(size);
+    return false;
+}
+
+#endif // !defined(_WIN32)
+
+GFXRECON_END_NAMESPACE(util)
+GFXRECON_END_NAMESPACE(gfxrecon)

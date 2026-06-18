@@ -48,7 +48,7 @@ const char kArguments[] =
     "format,--pbis,--pcj|--pipeline-creation-jobs,--save-pipeline-cache,--load-pipeline-cache,--quit-after-frame,--"
     "present-mode,--wait-before-first-submit,--present-override,--frame-"
     "warm-up-spirv,--frame-warm-up-load,--wait-before-frame,--loop-frame,--loop-count,--"
-    "replay-event-plugin-path,--replay-event-plugin-params";
+    "replay-event-plugin-path,--replay-event-plugin-params,--remote";
 
 static void PrintUsage(const char* exe_name)
 {
@@ -411,6 +411,10 @@ static void PrintUsage(const char* exe_name)
     GFXRECON_WRITE_CONSOLE("  --isolate-render-passes");
     GFXRECON_WRITE_CONSOLE(
         "          \t\tIsolate render passes by splitting the command buffer into multiple submits.");
+    GFXRECON_WRITE_CONSOLE("  --remote <address>\tConnect to a controller process for replay settings and");
+    GFXRECON_WRITE_CONSOLE("          \t\tbidirectional I/O. Address forms: tcp:host:port,");
+    GFXRECON_WRITE_CONSOLE("          \t\tunix:@name (abstract), or unix:/path. Replay is the");
+    GFXRECON_WRITE_CONSOLE("          \t\tclient; the controller is the server.");
 
 #if defined(_WIN32)
     GFXRECON_WRITE_CONSOLE("")

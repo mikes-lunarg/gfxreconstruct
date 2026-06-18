@@ -51,6 +51,7 @@ class LoggingManager
     bool UpdateFileTarget(
         bool write_to_file, const std::string& file_name, bool create_new, bool leave_open, bool flush_after_write);
     void UpdateDebugViewTarget(bool enabled);
+    void UpdateCallbackTarget(bool enabled, std::function<void(LoggingSeverity, const std::string&)> callback);
 
     // Logging functions
     void LogMessage(LoggingSeverity severity, const std::string& message);
@@ -106,6 +107,10 @@ class Log
 
     // NOTE: not thread-safe. must be called before any concurrent logging.
     static void SetFatalCallback(FatalCallback callback);
+
+    // Register a callback that receives every emitted log message, or pass nullptr to remove a previously-registered
+    // callback. Used to relay log output over a RemoteChannel.
+    static void SetLogCallback(std::function<void(LoggingSeverity, const std::string&)> fn);
 
     static void Release() { fatal_callback_ = {}; }
 

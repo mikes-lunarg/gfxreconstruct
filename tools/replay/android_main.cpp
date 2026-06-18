@@ -32,6 +32,7 @@
 #include "util/android/intent.h"
 #include "util/logging.h"
 #include "util/platform.h"
+#include "util/remote_channel.h"
 #include "parse_dump_resources_cli.h"
 
 #include <android/log.h>
@@ -83,10 +84,21 @@ void android_main(struct android_app* app)
     std::string                    args = gfxrecon::util::GetIntentExtra(app, kArgsExtentKey);
     gfxrecon::util::ArgumentParser arg_parser(false, args.c_str(), kOptions, kArguments);
 
+    bool run     = true;
+    bool success = false;
+
+    // If --remote is specified, the controller supplies the replay settings. Because the user explicitly requested
+    // remote control, treat any failure to establish it as fatal rather than silently falling back to the intent
+    // arguments.
+    gfxrecon::util::RemoteChannel remote_channel;
+    if (gfxrecon::replay::SetupRemoteChannel(remote_channel, arg_parser) ==
+        gfxrecon::replay::RemoteSetupResult::kFailed)
+    {
+        run = false;
+    }
+
     app->onAppCmd     = ProcessAppCmd;
     app->onInputEvent = ProcessInputEvent;
-
-    bool run = true;
 
     if (CheckOptionPrintUsage(kApplicationName, arg_parser) ||
         CheckOptionPrintFeatureVersions<gfxrecon::replay::ReplayFeatureBase>(kApplicationName, arg_parser))
@@ -118,7 +130,7 @@ void android_main(struct android_app* app)
                     kApplicationName, fp, VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, app);
             };
 
-            gfxrecon::replay::RunReplay(
+            success = gfxrecon::replay::RunReplay(
                 g_file_processor, g_features, arg_parser, filename, kLayerProperty, make_application);
         }
         catch (std::runtime_error& error)
@@ -137,6 +149,9 @@ void android_main(struct android_app* app)
         // Ensure user data is cleared after either a successful run or an exception.
         app->userData = nullptr;
     }
+
+    // Notify the controller that replay is complete. A no-op when no remote controller is connected.
+    gfxrecon::replay::ShutdownRemoteChannel(remote_channel, success);
 
     GFXRECON_WRITE_CONSOLE("====== Exiting android_main");
 
