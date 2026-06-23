@@ -30,6 +30,7 @@
 #include "util/file_path.h"
 #include "util/logging.h"
 #include "util/platform.h"
+#include "util/remote_channel.h"
 #include "vulkan_replay_dump_resources_json.h"
 #include "Vulkan-Utility-Libraries/vk_format_utils.h"
 
@@ -69,15 +70,34 @@ VulkanReplayDumpResourcesJson::VulkanReplayDumpResourcesJson(const VulkanReplayO
 
 bool VulkanReplayDumpResourcesJson::InitializeFile(const std::string& filename)
 {
-    int ret = gfxrecon::util::platform::FileOpen(&file_, filename.c_str(), "w");
-    if (ret || file_ == nullptr)
+    filename_ = filename;
+
+#if !defined(_WIN32)
+    if (util::RemoteChannel::IsActive())
     {
-#if defined(_WIN32)
-        GFXRECON_LOG_FATAL("Could not open dump resources output json file %s", filename.c_str());
-#else
-        GFXRECON_LOG_FATAL("Could not open dump resources output json file %s (%s)", filename.c_str(), strerror(ret));
+        mem_buf_  = nullptr;
+        mem_size_ = 0;
+        file_     = open_memstream(&mem_buf_, &mem_size_);
+        if (file_ == nullptr)
+        {
+            GFXRECON_LOG_ERROR("Could not open memory stream for dump resources JSON '%s'", filename.c_str());
+            return false;
+        }
+    }
+    else
 #endif
-        return false;
+    {
+        int ret = gfxrecon::util::platform::FileOpen(&file_, filename.c_str(), "w");
+        if (ret || file_ == nullptr)
+        {
+#if defined(_WIN32)
+            GFXRECON_LOG_FATAL("Could not open dump resources output json file %s", filename.c_str());
+#else
+            GFXRECON_LOG_FATAL(
+                "Could not open dump resources output json file %s (%s)", filename.c_str(), strerror(ret));
+#endif
+            return false;
+        }
     }
 
     util::platform::FileWrite("[\n", 2, file_);
@@ -122,6 +142,16 @@ void VulkanReplayDumpResourcesJson::Close()
         file_ = nullptr;
     }
     first_block_ = true;
+
+#if !defined(_WIN32)
+    if (mem_buf_ != nullptr)
+    {
+        util::RemoteChannel::SendActiveFile(filename_, mem_buf_, mem_size_);
+        free(mem_buf_);
+        mem_buf_  = nullptr;
+        mem_size_ = 0;
+    }
+#endif
 }
 
 nlohmann::ordered_json& VulkanReplayDumpResourcesJson::BlockStart()

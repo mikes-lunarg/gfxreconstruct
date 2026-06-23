@@ -92,6 +92,9 @@ class VulkanReplayDumpResourcesJson
     bool InitializeFile(const std::string& filename);
 
     FILE*                   file_;
+    std::string             filename_; // kept for SendActiveFile on Close()
+    char*                   mem_buf_{ nullptr };
+    size_t                  mem_size_{ 0 };
     nlohmann::ordered_json  header_;
     nlohmann::ordered_json  json_data_;
     nlohmann::ordered_json* current_entry;
