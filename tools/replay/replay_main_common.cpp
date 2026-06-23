@@ -67,13 +67,17 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
     util::Log::SetLogCallback(
         [&channel](util::LoggingSeverity severity, const std::string& message) { channel.SendLog(severity, message); });
 
+    // Register the channel so file writers (screenshots, dump-resources) stream their output to the controller.
+    util::RemoteChannel::SetActiveChannel(&channel);
+
     return RemoteSetupResult::kConnected;
 }
 
 void ShutdownRemoteChannel(util::RemoteChannel& channel, bool success)
 {
-    // Stop relaying log output before notifying the controller that replay is complete.
+    // Stop relaying log output and file writes before notifying the controller that replay is complete.
     util::Log::SetLogCallback(nullptr);
+    util::RemoteChannel::SetActiveChannel(nullptr);
     channel.SendDone(success);
 }
 

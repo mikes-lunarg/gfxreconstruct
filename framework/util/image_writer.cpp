@@ -26,6 +26,7 @@
 #include "platform.h"
 #include "util/file_path.h"
 #include "util/logging.h"
+#include "util/remote_channel.h"
 
 #include <assert.h>
 #include <cstddef>
@@ -435,8 +436,6 @@ bool WriteBmpImage(const std::string& filename,
                    DataFormats        format,
                    bool               write_alpha)
 {
-    GFXRECON_LOG_INFO("%s(): Writing file \"%s\"", __func__, filename.c_str())
-
     if (data_pitch == 0)
     {
         data_pitch = static_cast<uint32_t>(width * DataFormatsSizes(format));
@@ -447,19 +446,36 @@ bool WriteBmpImage(const std::string& filename,
         }
     }
 
-    bool    success = false;
-    FILE*   file    = nullptr;
-    int32_t result  = util::platform::FileOpen(&file, filename.c_str(), "wb");
+    bool   success  = false;
+    FILE*  file     = nullptr;
+    char*  mem_buf  = nullptr;
+    size_t mem_size = 0;
 
-    if ((result == 0) && (file != nullptr))
+#if !defined(_WIN32)
+    if (util::RemoteChannel::IsActive())
     {
-        success = WriteBmpHeader(file, width, height, write_alpha);
-        if (!success)
+        file = open_memstream(&mem_buf, &mem_size);
+        if (file == nullptr)
         {
-            GFXRECON_LOG_ERROR("%s() Failed writing file", __func__);
+            GFXRECON_LOG_ERROR("%s() Failed to open memory stream for '%s'", __func__, filename.c_str());
             return false;
         }
+    }
+    else
+#endif
+    {
+        GFXRECON_LOG_INFO("%s(): Writing file \"%s\"", __func__, filename.c_str())
+        int32_t result = util::platform::FileOpen(&file, filename.c_str(), "wb");
+        if (result != 0 || file == nullptr)
+        {
+            GFXRECON_LOG_ERROR("%s() Failed to open file (%s)", __func__, strerror(errno));
+            return false;
+        }
+    }
 
+    success = WriteBmpHeader(file, width, height, write_alpha);
+    if (success)
+    {
         // Y needs to be inverted when writing the bitmap data.
         auto height_1 = height - 1;
 
@@ -486,17 +502,28 @@ bool WriteBmpImage(const std::string& filename,
             }
         }
 
-        if (!ferror(file))
+        if (ferror(file))
         {
-            success = true;
+            success = false;
         }
-
-        util::platform::FileClose(file);
     }
     else
     {
-        GFXRECON_LOG_ERROR("%s() Failed to open file (%s)", __func__, strerror(errno));
+        GFXRECON_LOG_ERROR("%s() Failed writing BMP header", __func__);
     }
+
+    util::platform::FileClose(file);
+
+#if !defined(_WIN32)
+    if (mem_buf != nullptr)
+    {
+        if (success)
+        {
+            util::RemoteChannel::SendActiveFile(filename, mem_buf, mem_size);
+        }
+        free(mem_buf);
+    }
+#endif
 
     return success;
 }
@@ -534,8 +561,6 @@ bool WritePngImage(const std::string& filename,
     bool success = false;
 
 #ifdef GFXRECON_ENABLE_PNG_SCREENSHOT
-    GFXRECON_LOG_INFO("%s(): Writing file \"%s\"", __func__, filename.c_str())
-
     if (data_pitch == 0)
     {
         data_pitch = static_cast<uint32_t>(width * DataFormatsSizes(format));
@@ -547,22 +572,51 @@ bool WritePngImage(const std::string& filename,
     }
 
     const uint8_t* bytes = ConvertIntoTemporaryBuffer(width, height, data, data_pitch, format, true, write_alpha);
-
     stbi_write_png_compression_level = 4;
-    const uint32_t png_row_pitch     = width * (write_alpha ? kImageBpp : kImageBppNoAlpha);
+    const int png_components         = static_cast<int>(write_alpha ? kImageBpp : kImageBppNoAlpha);
+    const int png_row_pitch          = static_cast<int>(width) * png_components;
 
-    if (1 == stbi_write_png(filename.c_str(),
-                            static_cast<int>(width),
-                            static_cast<int>(height),
-                            static_cast<int>(write_alpha ? kImageBpp : kImageBppNoAlpha),
-                            bytes,
-                            (int)png_row_pitch))
+#if !defined(_WIN32)
+    if (util::RemoteChannel::IsActive())
     {
-        success = true;
+        std::vector<uint8_t> png_data;
+        auto                 write_cb = [](void* ctx, void* buf, int sz) {
+            auto* vec = static_cast<std::vector<uint8_t>*>(ctx);
+            vec->insert(vec->end(), static_cast<uint8_t*>(buf), static_cast<uint8_t*>(buf) + sz);
+        };
+        if (1 == stbi_write_png_to_func(write_cb,
+                                        &png_data,
+                                        static_cast<int>(width),
+                                        static_cast<int>(height),
+                                        png_components,
+                                        bytes,
+                                        png_row_pitch))
+        {
+            util::RemoteChannel::SendActiveFile(filename, png_data.data(), png_data.size());
+            success = true;
+        }
+        else
+        {
+            GFXRECON_LOG_ERROR("%s() Failed writing PNG to memory", __func__);
+        }
     }
     else
+#endif
     {
-        GFXRECON_LOG_ERROR("%s() Failed writing file", __func__);
+        GFXRECON_LOG_INFO("%s(): Writing file \"%s\"", __func__, filename.c_str())
+        if (1 == stbi_write_png(filename.c_str(),
+                                static_cast<int>(width),
+                                static_cast<int>(height),
+                                png_components,
+                                bytes,
+                                png_row_pitch))
+        {
+            success = true;
+        }
+        else
+        {
+            GFXRECON_LOG_ERROR("%s() Failed writing file", __func__);
+        }
     }
 #endif
 

@@ -75,6 +75,18 @@ class RemoteChannel
     void SendProgress(uint64_t frame);
     void SendDone(bool success); // Also calls Disconnect().
 
+    // Register (or clear, with nullptr) the process-wide channel. Called once during remote setup and cleared during
+    // shutdown, both on the main thread.
+    static void SetActiveChannel(RemoteChannel* channel);
+
+    // Returns true when a connected channel is registered. File writers check this before deciding to skip disk I/O.
+    static bool IsActive();
+
+    // Send data to the active channel as a "file" message; a no-op when no channel is registered or connected. Lets
+    // file writers (screenshots, dump-resources) stream their output without threading a channel pointer through the
+    // decode layer.
+    static void SendActiveFile(const std::string& name, const void* data, size_t size);
+
   private:
     bool SendFrame(const void* data, uint32_t size);
     bool RecvFrame(std::vector<uint8_t>& out);
@@ -83,6 +95,9 @@ class RemoteChannel
 
     int        fd_{ -1 };
     std::mutex send_mutex_;
+
+    // Process-wide channel used by the static NotifyFileWritten(). Only one controller connection exists per process.
+    static RemoteChannel* active_channel_;
 };
 
 GFXRECON_END_NAMESPACE(util)

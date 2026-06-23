@@ -455,5 +455,28 @@ bool RemoteChannel::RecvExact(void* buf, size_t size)
 
 #endif // !defined(_WIN32)
 
+// The active-channel registry is platform-independent; IsActive() / SendActiveFile() are compiled everywhere.
+// SendFile() is a no-op on Windows stubs, so the channel-active path is reachable but harmless there.
+RemoteChannel* RemoteChannel::active_channel_ = nullptr;
+
+void RemoteChannel::SetActiveChannel(RemoteChannel* channel)
+{
+    active_channel_ = channel;
+}
+
+bool RemoteChannel::IsActive()
+{
+    return active_channel_ != nullptr && active_channel_->IsConnected();
+}
+
+void RemoteChannel::SendActiveFile(const std::string& name, const void* data, size_t size)
+{
+    RemoteChannel* channel = active_channel_;
+    if (channel != nullptr && channel->IsConnected())
+    {
+        channel->SendFile(name, data, size);
+    }
+}
+
 GFXRECON_END_NAMESPACE(util)
 GFXRECON_END_NAMESPACE(gfxrecon)
