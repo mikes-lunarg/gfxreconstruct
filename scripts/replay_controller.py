@@ -46,6 +46,7 @@ import json
 import os
 import socket
 import struct
+import subprocess
 import sys
 
 
@@ -173,6 +174,7 @@ def main():
                         type=int,
                         default=9001,
                         help='TCP port to listen on (default: 9001).')
+    parser.add_argument('--adb', action='store_true', help='Launch replay on an connected Android device via adb.')
     parser.add_argument(
         '--output-dir',
         default='remote_output',
@@ -199,8 +201,21 @@ def main():
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((args.host, args.port))
     server.listen(1)
-    print(f'Listening on {args.host}:{args.port} ... start replay with '
-          f'--remote tcp:{args.host}:{args.port}')
+    print(f'Listening on {args.host}:{args.port}')
+
+    if args.adb:
+        try:
+            # Use adb reverse to forward the socket for Android replay.
+            LOCAL_ABSTRACT_NAME = 'gfxrecon'
+            subprocess.run(['adb', 'reverse', f'localabstract:{LOCAL_ABSTRACT_NAME}', f'tcp:{args.port}'], check=True)
+            print(f"ADB reverse set up: tcp:{args.port} -> localabstract:{LOCAL_ABSTRACT_NAME}")
+
+            # Launch the replay activity on the device with the --remote argument pointing to the abstract socket.
+            subprocess.run(['adb', 'shell', 'am', 'start', '-n', 'com.lunarg.gfxreconstruct.replay/.ReplayActivity', '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '--es', 'args', f'"--remote unix:@{LOCAL_ABSTRACT_NAME}"'], check=True)
+
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to set up adb remote: {e}", file=sys.stderr)
+            return 1
 
     try:
         conn, peer = server.accept()
