@@ -28,9 +28,13 @@
 
 #include "nlohmann/json.hpp"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
@@ -68,7 +72,9 @@ class RemoteChannel
     // controller-supplied CLI args string, or "" if the handshake failed.
     std::string Handshake();
 
-    // The following are thread-safe and are no-ops when disconnected.
+    // The following are thread-safe, non-blocking, and no-ops when disconnected. Messages are queued and delivered
+    // in order by a background sender thread; if a send fails, queued messages are dropped and the channel reports
+    // disconnected. Disconnect() flushes any queued messages before closing the socket.
     void SendJson(const nlohmann::json& msg);
     void SendFile(const std::string& name, const void* data, size_t size);
     void SendLog(LoggingSeverity severity, const std::string& message);
@@ -88,13 +94,27 @@ class RemoteChannel
     static void SendActiveFile(const std::string& name, const void* data, size_t size);
 
   private:
-    bool SendFrame(const void* data, uint32_t size);
+    // Append a length-prefixed frame to buffer.
+    static void AppendFrame(std::vector<uint8_t>& buffer, const void* data, uint32_t size);
+
+    // Queue a pre-framed buffer for the sender thread; drops the buffer when disconnected or after a send failure.
+    void EnqueueFrames(std::vector<uint8_t>&& buffer);
+
+    // Sender thread entry point: sends queued buffers in order until stopped or a send fails.
+    void SenderThread();
+
     bool RecvFrame(std::vector<uint8_t>& out);
     bool SendAll(const void* buf, size_t size);
     bool RecvExact(void* buf, size_t size);
 
-    int        fd_{ -1 };
-    std::mutex send_mutex_;
+    int fd_{ -1 };
+
+    std::thread                      sender_thread_;
+    std::mutex                       queue_mutex_;
+    std::condition_variable          queue_cv_;
+    std::deque<std::vector<uint8_t>> send_queue_;              // Guarded by queue_mutex_.
+    bool                             stop_requested_{ false }; // Guarded by queue_mutex_.
+    std::atomic<bool>                send_failed_{ false };
 
     // Process-wide channel used by the static NotifyFileWritten(). Only one controller connection exists per process.
     static RemoteChannel* active_channel_;
