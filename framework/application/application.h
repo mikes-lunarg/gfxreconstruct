@@ -131,8 +131,8 @@ class Application final
             replay_event_sink ? std::move(replay_event_sink) : std::make_unique<plugin::NullReplayEventSink>();
     }
 
-    // Set an optional, non-owning channel used to report per-frame replay progress to a remote controller. Pass
-    // nullptr (the default) to disable progress reporting.
+    // Set an optional, non-owning channel used to report per-frame replay progress to a remote controller and to
+    // receive playback commands (pause, resume, step, stop) from it. Pass nullptr (the default) to disable.
     void SetRemoteChannel(util::RemoteChannel* remote_channel) { remote_channel_ = remote_channel; }
 
   private:
@@ -140,6 +140,11 @@ class Application final
     {
         return file_processor_ && file_processor_->IsFrameProcessingInitialized();
     }
+
+    // Apply trigger actions queued by the remote channel's receiver thread. While paused, waits briefly for an
+    // action to arrive so the pause loop stays responsive without spinning.
+    void ApplyRemoteTriggers();
+    void ApplyRemoteTrigger(const std::string& action);
 
     decode::PreloadFileProcessor* GetPreloadFileProcessor()
     {

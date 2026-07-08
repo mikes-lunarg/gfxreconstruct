@@ -29,6 +29,7 @@
 #include "nlohmann/json.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -69,8 +70,14 @@ class RemoteChannel
     void Disconnect();
 
     // Perform the startup handshake. Sends "hello", waits for a "settings" message, then sends "ready". Returns the
-    // controller-supplied CLI args string, or "" if the handshake failed.
+    // controller-supplied CLI args string, or "" if the handshake failed. On success, starts a receiver thread that
+    // queues incoming "trigger" messages for retrieval with TryPopTrigger() / WaitPopTrigger().
     std::string Handshake();
+
+    // Pop the next controller-requested trigger action ("pause", "resume", "step", "stop", ...), if any. Thread-safe.
+    // WaitPopTrigger blocks for up to timeout waiting for an action to arrive.
+    bool TryPopTrigger(std::string* action);
+    bool WaitPopTrigger(std::string* action, std::chrono::milliseconds timeout);
 
     // The following are thread-safe, non-blocking, and no-ops when disconnected. Messages are queued and delivered
     // in order by a background sender thread; if a send fails, queued messages are dropped and the channel reports
@@ -103,6 +110,9 @@ class RemoteChannel
     // Sender thread entry point: sends queued buffers in order until stopped or a send fails.
     void SenderThread();
 
+    // Receiver thread entry point: queues incoming trigger actions until the controller disconnects.
+    void ReceiverThread();
+
     bool RecvFrame(std::vector<uint8_t>& out);
     bool SendAll(const void* buf, size_t size);
     bool RecvExact(void* buf, size_t size);
@@ -115,6 +125,11 @@ class RemoteChannel
     std::deque<std::vector<uint8_t>> send_queue_;              // Guarded by queue_mutex_.
     bool                             stop_requested_{ false }; // Guarded by queue_mutex_.
     std::atomic<bool>                send_failed_{ false };
+
+    std::thread             receiver_thread_;
+    std::mutex              trigger_mutex_;
+    std::condition_variable trigger_cv_;
+    std::deque<std::string> trigger_queue_; // Guarded by trigger_mutex_.
 
     // Process-wide channel used by the static NotifyFileWritten(). Only one controller connection exists per process.
     static RemoteChannel* active_channel_;
