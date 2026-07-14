@@ -1257,6 +1257,8 @@ VkResult TransferDumpingContext::DumpTransferCommands(Index submit_info_index, I
 
     for (auto& [cmd_index, cmd] : transfer_params_)
     {
+        DumpResourcesProgress::Advance();
+
         const DumpedResourceBase dumped_resource_base(DumpResourcesPipelineStage::kTransfer,
                                                       bcb_index_,
                                                       cmd_index,
