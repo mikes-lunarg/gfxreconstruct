@@ -149,6 +149,10 @@ def handle_session(conn, replay_args, output_dir):
 
     success = False
     prev_msg_type = None
+    last_frame = None
+    last_op = None
+    last_current = None
+    last_total = None
     while True:
         if commands is not None:
             # Windows select() only supports sockets, so poll the socket and drain queued stdin commands.
@@ -168,12 +172,25 @@ def handle_session(conn, replay_args, output_dir):
 
         if msg_type == 'log':
             print(f"[{msg.get('level', '?'):7}] {msg.get('message', '')}")
-        elif msg_type == 'progress':
-            if prev_msg_type == 'progress':
+        elif msg_type in ('progress', 'operation_progress'):
+            # Frame-level 'progress' and bounded 'operation_progress' share one in-place status line.
+            if msg_type == 'progress':
+                last_frame = msg.get('frame')
+            else:
+                last_op = msg.get('operation', 'operation')
+                last_current = msg.get('current')
+                last_total = msg.get('total')
+            if prev_msg_type in ('progress', 'operation_progress'):
                 print(
                     f"\033[F", end=''
                 )  # Move cursor up one line to overwrite previous progress
-            print(f"--- progress: frame {msg.get('frame')}")
+            # 'frame' may be unknown if an operation reports before any frame progress.
+            parts = []
+            if last_frame is not None:
+                parts.append(f"frame {last_frame}")
+            if last_current is not None:
+                parts.append(f"{last_op} {last_current}/{last_total}")
+            print(f"--- progress: {', '.join(parts)}")
         elif msg_type == 'file':
             # A "file" message is always followed by a raw binary frame.
             name = msg.get('name', 'unnamed')
