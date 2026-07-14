@@ -82,6 +82,7 @@ replay     → controller:  {"type":"ready"}
 
 ```json
 {"type":"progress","frame":42}
+{"type":"operation_progress","operation":"dump_resources","current":37,"total":90}
 {"type":"file","name":"dump/frame_0042.png","size":204800}
 <204800 raw bytes — separate binary frame, no encoding>
 {"type":"done","success":true}
@@ -124,6 +125,10 @@ already a `<string, string>` map. The key sets are disjoint; the shape is not.
 ## Progress Messages
 
 - **Frame-level** — `{"type":"progress","frame":N}`, emitted per replayed frame.
+- **Operation-level** — `{"type":"operation_progress","operation":<op>,"current":X,"total":Y}`,
+  a bounded-progress message with a running total. Used by dump-resources, where
+  `total` is the sum of all targeted commands (draw + dispatch + trace-rays +
+  transfer).
 
 ## Playback Triggers
 
