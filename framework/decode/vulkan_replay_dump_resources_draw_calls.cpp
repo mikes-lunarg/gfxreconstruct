@@ -1226,6 +1226,8 @@ VkResult DrawCallsDumpingContext::DumpDrawCalls(VkQueue              queue,
             };
 
             delegate_.DumpDrawCallInfo(draw_call_info);
+
+            DumpResourcesProgress::Advance();
         }
 
         res = RevertRenderTargetImageLayouts(queue, slot);
