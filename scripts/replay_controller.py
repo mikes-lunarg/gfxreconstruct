@@ -20,25 +20,38 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 '''
-Controller for gfxrecon-replay's --remote feature.
+Controller for gfxrecon-replay's remote feature.
 
-gfxrecon-replay is the client and connects outward to this controller, which
-acts as the server. This script listens for that connection, sends the replay
-settings, then prints log/progress messages and saves any files (screenshots,
-dump-resources) that replay streams back.
+This script sends replay settings, then prints log/progress messages and saves
+any files (screenshots, dump-resources) that replay streams back. It supports
+both directions of connection setup:
+
+  * Default (listen): this controller is the server; replay dials in with
+    --remote-connect.
+  * --connect HOST:PORT: this controller dials out to a replay that is listening
+    with --remote-listen.
 
 Wire format: each frame is a little-endian uint32 length prefix followed by
 that many payload bytes. Structured messages are JSON. A binary file payload is
 a JSON "file" frame immediately followed by a raw binary frame.
 
-Desktop usage:
-    python3 scripts/replay_controller.py --port 9001 -- --loop-count 3 capture.gfxr
-    gfxrecon-replay --remote tcp:localhost:9001
+Desktop usage (replay connects out):
+    python3 scripts/replay_controller.py --listen 127.0.0.1:9001 -- --loop-count 3 capture.gfxr
+    gfxrecon-replay --remote-connect tcp:localhost:9001
 
-Android usage (replay connects to an abstract unix socket forwarded to the PC):
+Desktop usage (replay listens):
+    gfxrecon-replay --remote-listen tcp:0.0.0.0:9001 capture.gfxr
+    python3 scripts/replay_controller.py --connect localhost:9001 -- --loop-count 3 capture.gfxr
+
+Android usage (replay connects out, abstract unix socket forwarded to the PC):
     adb reverse localabstract:gfxrecon tcp:9001
-    python3 scripts/replay_controller.py --port 9001 -- /sdcard/capture.gfxr
-    # launch the replay activity with intent args: --remote unix:@gfxrecon
+    python3 scripts/replay_controller.py --listen 127.0.0.1:9001 -- /sdcard/capture.gfxr
+    # launch the replay activity with intent args: --remote-connect unix:@gfxrecon
+
+Android usage (replay listens, abstract unix socket forwarded to the PC):
+    python3 scripts/replay_controller.py --connect localhost:9001 --adb -- /sdcard/capture.gfxr
+    # sets up: adb forward tcp:9001 localabstract:gfxrecon
+    # launches the replay activity with intent args: --remote-listen unix:@gfxrecon
 '''
 
 import argparse
@@ -51,6 +64,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 TRIGGER_COMMANDS = {
     'p': 'pause',
@@ -121,10 +135,15 @@ def start_command_reader():
     return commands
 
 
-def handle_session(conn, replay_args, output_dir):
-    '''Run the handshake and process messages until replay reports done.'''
+def handle_session(conn, replay_args, output_dir, hello=None):
+    '''Run the handshake and process messages until replay reports done.
+
+    hello is replay's already-received greeting frame when the caller read it during connection setup
+    (connect mode); when None (listen mode) it is read here.
+    '''
     # Handshake: replay greets us, we reply with settings, replay acknowledges.
-    hello = recv_frame(conn)
+    if hello is None:
+        hello = recv_frame(conn)
     if hello is None:
         print('Replay disconnected before handshake', file=sys.stderr)
         return False
@@ -145,7 +164,9 @@ def handle_session(conn, replay_args, output_dir):
     commands = None
     if sys.stdin.isatty():
         commands = start_command_reader()
-        print('Commands: p=pause, r=resume, s=step, q=stop (press Enter after each)')
+        print(
+            'Commands: p=pause, r=resume, s=step, q=stop (press Enter after each)'
+        )
 
     success = False
     prev_msg_type = None
@@ -229,21 +250,57 @@ def save_file(output_dir, name, blob, expected_size):
     print(f"Saved file: {dest} ({len(blob)} bytes)")
 
 
+def connect_and_await_hello(host, port, timeout_seconds=30):
+    '''Dial out to a listening replay and return (conn, hello_frame) once its hello arrives.
+
+    Replay may still be coming up when we connect. Through `adb forward`, adb accepts the local
+    connection immediately and only then dials the device-side socket, so a not-yet-listening replay
+    shows up as a connection that closes right after connect rather than as connection-refused. Retry
+    the whole connect-and-read until the hello arrives or the timeout expires; returns (None, None) on
+    timeout.
+    '''
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        conn = None
+        try:
+            conn = socket.create_connection((host, port), timeout=5)
+            conn.settimeout(5)
+            hello = recv_frame(conn)
+            if hello is not None:
+                conn.settimeout(None)
+                return conn, hello
+            # Connected, but replay is not listening yet (e.g. adb forward with no device-side socket).
+        except OSError:
+            pass
+        if conn is not None:
+            conn.close()
+        if time.monotonic() >= deadline:
+            return None, None
+        time.sleep(0.2)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Control gfxrecon-replay over its --remote socket.',
+        description='Control gfxrecon-replay over its remote socket.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=
         'Everything after -- is forwarded to replay as its settings args string.'
     )
-    parser.add_argument('--host',
-                        default='127.0.0.1',
-                        help='Address to listen on (default: 127.0.0.1).')
-    parser.add_argument('--port',
-                        type=int,
-                        default=9001,
-                        help='TCP port to listen on (default: 9001).')
-    parser.add_argument('--adb', action='store_true', help='Launch replay on an connected Android device via adb.')
+    parser.add_argument(
+        '--listen',
+        metavar='HOST:PORT',
+        default='127.0.0.1:9001',
+        help='Address to listen on for replay to connect (default: '
+        '127.0.0.1:9001).')
+    parser.add_argument(
+        '--connect',
+        metavar='HOST:PORT',
+        help='Connect out to a replay that is listening (--remote-listen) '
+        'instead of listening for replay to connect.')
+    parser.add_argument(
+        '--adb',
+        action='store_true',
+        help='Launch replay on an connected Android device via adb.')
     parser.add_argument(
         '--output-dir',
         default='remote_output',
@@ -266,21 +323,120 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    def parse_host_port(flag, spec):
+        host, _, port_str = spec.rpartition(':')
+        if not host or not port_str:
+            parser.error(f'{flag} expects HOST:PORT')
+        try:
+            return host, int(port_str)
+        except ValueError:
+            parser.error(f'{flag} expects a numeric port in HOST:PORT')
+
+    LOCAL_ABSTRACT_NAME = 'gfxrecon'
+    PACKAGE = 'com.lunarg.gfxreconstruct.replay'
+
+    if args.connect:
+        # Connect mode: dial out to a replay that is listening with --remote-listen.
+        host, port = parse_host_port('--connect', args.connect)
+
+        if args.adb:
+            try:
+                # A leftover 'adb reverse' from a prior listen-mode run keeps adbd bound to the abstract
+                # socket, so replay's --remote-listen bind would fail with EADDRINUSE. Clear it first
+                # (check=False: it errors when no such mapping exists).
+                subprocess.run([
+                    'adb', 'reverse', '--remove',
+                    f'localabstract:{LOCAL_ABSTRACT_NAME}'
+                ],
+                               check=False)
+
+                # Use adb forward so the PC-side connection reaches the device's abstract socket.
+                subprocess.run([
+                    'adb', 'forward', f'tcp:{port}',
+                    f'localabstract:{LOCAL_ABSTRACT_NAME}'
+                ],
+                               check=True)
+                print(
+                    f"ADB forward set up: tcp:{port} -> localabstract:{LOCAL_ABSTRACT_NAME}"
+                )
+
+                # Stop any prior instance first; a lingering process keeps the abstract socket bound
+                # (it is unlinkable) and the new instance would fail to listen with EADDRINUSE.
+                subprocess.run(['adb', 'shell', 'am', 'force-stop', PACKAGE],
+                               check=True)
+
+                # Launch the replay activity on the device listening on the abstract socket.
+                subprocess.run([
+                    'adb', 'shell', 'am', 'start', '-n',
+                    f'{PACKAGE}/.ReplayActivity', '-a',
+                    'android.intent.action.MAIN', '-c',
+                    'android.intent.category.LAUNCHER', '--es', 'args',
+                    f'"--remote-listen unix:@{LOCAL_ABSTRACT_NAME}"'
+                ],
+                               check=True)
+
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to set up adb remote: {e}", file=sys.stderr)
+                return 1
+
+        try:
+            conn, hello = connect_and_await_hello(host, port)
+        except KeyboardInterrupt:
+            print('\nInterrupted while connecting', file=sys.stderr)
+            return 1
+        if conn is None:
+            print(f'Timed out waiting for a listening replay at {host}:{port}',
+                  file=sys.stderr)
+            return 1
+
+        print(f'Connected to replay at {host}:{port}')
+        with conn:
+            success = handle_session(conn, ' '.join(replay_args),
+                                     args.output_dir, hello)
+
+        return 0 if success else 1
+
+    # Listen mode: this controller is the server and replay connects in with --remote-connect.
+    host, port = parse_host_port('--listen', args.listen)
+
+    if args.adb:
+        # A leftover 'adb forward' from a prior connect-mode run keeps adb bound to the host port, so
+        # our own bind below would fail with EADDRINUSE. Clear it first (check=False: it errors when no
+        # such mapping exists).
+        subprocess.run(['adb', 'forward', '--remove', f'tcp:{port}'],
+                       check=False)
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((args.host, args.port))
+    server.bind((host, port))
     server.listen(1)
-    print(f'Listening on {args.host}:{args.port}')
+    print(f'Listening on {host}:{port}')
 
     if args.adb:
         try:
             # Use adb reverse to forward the socket for Android replay.
-            LOCAL_ABSTRACT_NAME = 'gfxrecon'
-            subprocess.run(['adb', 'reverse', f'localabstract:{LOCAL_ABSTRACT_NAME}', f'tcp:{args.port}'], check=True)
-            print(f"ADB reverse set up: tcp:{args.port} -> localabstract:{LOCAL_ABSTRACT_NAME}")
+            subprocess.run([
+                'adb', 'reverse', f'localabstract:{LOCAL_ABSTRACT_NAME}',
+                f'tcp:{port}'
+            ],
+                           check=True)
+            print(
+                f"ADB reverse set up: tcp:{port} -> localabstract:{LOCAL_ABSTRACT_NAME}"
+            )
 
-            # Launch the replay activity on the device with the --remote argument pointing to the abstract socket.
-            subprocess.run(['adb', 'shell', 'am', 'start', '-n', 'com.lunarg.gfxreconstruct.replay/.ReplayActivity', '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '--es', 'args', f'"--remote unix:@{LOCAL_ABSTRACT_NAME}"'], check=True)
+            # Stop any prior instance so a fresh process picks up this run's settings.
+            subprocess.run(['adb', 'shell', 'am', 'force-stop', PACKAGE],
+                           check=True)
+
+            # Launch the replay activity on the device connecting to the abstract socket.
+            subprocess.run([
+                'adb', 'shell', 'am', 'start', '-n',
+                f'{PACKAGE}/.ReplayActivity', '-a',
+                'android.intent.action.MAIN', '-c',
+                'android.intent.category.LAUNCHER', '--es', 'args',
+                f'"--remote-connect unix:@{LOCAL_ABSTRACT_NAME}"'
+            ],
+                           check=True)
 
         except subprocess.CalledProcessError as e:
             print(f"Failed to set up adb remote: {e}", file=sys.stderr)
