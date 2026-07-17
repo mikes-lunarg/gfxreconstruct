@@ -43,7 +43,7 @@ const char kArguments[] =
     "--dump-resources,--dump-resources-dir,--dump-resources-image-format,--pbis,"
     "--pcj|--pipeline-creation-jobs,--quit-after-frame,"
     "--wait-before-first-submit,--frame-warm-up-spirv,--frame-warm-up-load,--wait-before-frame,--loop-frame,"
-    "--loop-count,--remote";
+    "--loop-count,--remote-connect,--remote-listen";
 
 // The three names below belong to the D3D12 Feature, but they stay in the shared lists above:
 //     --dump-resources-before-draw            The D3D12 Feature reads it.
@@ -309,10 +309,15 @@ static void PrintUsage(const char* exe_name)
     GFXRECON_WRITE_CONSOLE("  --wait-before-frame <milliseconds>");
     GFXRECON_WRITE_CONSOLE("          \t\tWait for the specified amount of milliseconds before starting to replay");
     GFXRECON_WRITE_CONSOLE("          \t\teach frame. Default is 0 (no wait).");
-    GFXRECON_WRITE_CONSOLE("  --remote <address>\tConnect to a controller process for replay settings and");
-    GFXRECON_WRITE_CONSOLE("          \t\tbidirectional I/O. Address forms: tcp:host:port,");
-    GFXRECON_WRITE_CONSOLE("          \t\tunix:@name (abstract), or unix:/path. Replay is the");
-    GFXRECON_WRITE_CONSOLE("          \t\tclient; the controller is the server.");
+    GFXRECON_WRITE_CONSOLE("  --remote-connect <address>");
+    GFXRECON_WRITE_CONSOLE("          \t\tConnect out to a controller process for replay settings");
+    GFXRECON_WRITE_CONSOLE("          \t\tand bidirectional I/O. Address forms: tcp:host:port,");
+    GFXRECON_WRITE_CONSOLE("          \t\tunix:@name (abstract), or unix:/path.");
+    GFXRECON_WRITE_CONSOLE("  --remote-listen <address>");
+    GFXRECON_WRITE_CONSOLE("          \t\tListen for a controller process to connect (same address");
+    GFXRECON_WRITE_CONSOLE("          \t\tforms as --remote-connect). Waits up to 30 seconds for a");
+    GFXRECON_WRITE_CONSOLE("          \t\tconnection, then fails. Mutually exclusive with");
+    GFXRECON_WRITE_CONSOLE("          \t\t--remote-connect.");
 
     // The entries that belong to one Feature come last, in one section for each Feature.
     PrintFeatureUsage(gfxrecon::replay::GetLoadedFeatures());

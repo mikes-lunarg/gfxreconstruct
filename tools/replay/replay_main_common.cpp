@@ -46,14 +46,23 @@ static const std::vector<std::unique_ptr<ReplayFeatureBase>>* g_loaded_features 
 
 RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::ArgumentParser& arg_parser)
 {
-    if (!arg_parser.IsArgumentSet("--remote"))
+    const bool connect_set = arg_parser.IsArgumentSet("--remote-connect");
+    const bool listen_set  = arg_parser.IsArgumentSet("--remote-listen");
+    if (!connect_set && !listen_set)
     {
         return RemoteSetupResult::kNotRequested;
     }
+    if (connect_set && listen_set)
+    {
+        GFXRECON_LOG_ERROR("Specify only one of --remote-connect and --remote-listen");
+        return RemoteSetupResult::kFailed;
+    }
 
-    // Connect() and Handshake() log the specific reason for any failure, so no additional message is needed here.
-    const std::string address = arg_parser.GetArgumentValue("--remote");
-    if (!channel.Connect(address))
+    // Connect()/Listen() and Handshake() log the specific reason for any failure, so no additional message is needed
+    // here.
+    const std::string address     = arg_parser.GetArgumentValue(connect_set ? "--remote-connect" : "--remote-listen");
+    const bool        established = connect_set ? channel.Connect(address) : channel.Listen(address);
+    if (!established)
     {
         return RemoteSetupResult::kFailed;
     }
