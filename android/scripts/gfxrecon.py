@@ -91,7 +91,8 @@ def CreateInstallApkParser():
 
 def CreateReplayParser():
     parser = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]) + ' replay', description='Launch the replay tool.')
-    parser.add_argument('--remote', metavar='ADDRESS', help='Connect to a remote controller at the specified socket address (e.g. unix:@gfxrecon) for settings and output streaming (forwarded to replay tool)')
+    parser.add_argument('--remote-connect', metavar='ADDRESS', help='Connect out to a remote controller at the specified socket address (e.g. unix:@gfxrecon) for settings and output streaming (forwarded to replay tool)')
+    parser.add_argument('--remote-listen', metavar='ADDRESS', help='Listen for a remote controller to connect at the specified socket address (e.g. unix:@gfxrecon) for settings and output streaming (forwarded to replay tool)')
     parser.add_argument('-p', '--push-file', metavar='LOCAL_FILE', help='Local file to push to the location on device specified by <file>')
     parser.add_argument('--version', action='store_true', default=False, help='Print version information and exit (forwarded to replay tool)')
     parser.add_argument('--log-level', metavar='LEVEL', help='Specify highest level message to log. Options are: debug, info, warning, error, and fatal. Default is info. (forwarded to replay tool)')
@@ -167,9 +168,13 @@ def MakeExtrasString(args):
     if args.version:
         arg_list.append('--version')
 
-    if args.remote:
-        arg_list.append('--remote')
-        arg_list.append('{}'.format(args.remote))
+    if args.remote_connect:
+        arg_list.append('--remote-connect')
+        arg_list.append('{}'.format(args.remote_connect))
+
+    if args.remote_listen:
+        arg_list.append('--remote-listen')
+        arg_list.append('{}'.format(args.remote_listen))
 
     if args.log_level:
         arg_list.append('--log-level')
@@ -390,7 +395,7 @@ def MakeExtrasString(args):
 
     if args.file:
         arg_list.append(args.file)
-    elif not args.version and not args.remote:
+    elif not args.version and not args.remote_connect and not args.remote_listen:
         print('gfxrecon.py release: error: the following arguments are required: file')
         return None
 

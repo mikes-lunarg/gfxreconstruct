@@ -28,6 +28,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -50,6 +51,9 @@ GFXRECON_BEGIN_NAMESPACE(util)
 
 namespace
 {
+// Seconds to wait for a controller to connect in Listen() mode before giving up.
+constexpr int kAcceptTimeoutSeconds = 30;
+
 // Suppress SIGPIPE on platforms that signal it instead of honoring MSG_NOSIGNAL (e.g. macOS).
 void SetNoSigPipe(int fd)
 {
@@ -134,6 +138,39 @@ int ConnectTcp(const std::string& host_port)
     return fd;
 }
 
+// Populate addr/addrlen for a Unix domain socket name. A leading '@' selects the abstract namespace. Returns false if
+// the name is too long for sun_path.
+bool BuildUnixAddr(const std::string& name, sockaddr_un& addr, socklen_t& addrlen)
+{
+    addr            = {};
+    addr.sun_family = AF_UNIX;
+
+    if (!name.empty() && name[0] == '@')
+    {
+        // Abstract socket: leading null byte, name starts at sun_path[1], no trailing null.
+        std::string abstract_name = name.substr(1);
+        if (abstract_name.size() + 1 > sizeof(addr.sun_path))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: abstract socket name '%s' is too long", name.c_str());
+            return false;
+        }
+        addr.sun_path[0] = '\0';
+        memcpy(addr.sun_path + 1, abstract_name.data(), abstract_name.size());
+        addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + abstract_name.size());
+    }
+    else
+    {
+        if (name.size() + 1 > sizeof(addr.sun_path))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: Unix socket path '%s' is too long", name.c_str());
+            return false;
+        }
+        memcpy(addr.sun_path, name.data(), name.size());
+        addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + name.size() + 1);
+    }
+    return true;
+}
+
 // Connect a Unix domain socket. A leading '@' in name selects the abstract namespace. Returns a connected fd, or -1 on
 // failure.
 int ConnectUnix(const std::string& name)
@@ -145,40 +182,139 @@ int ConnectUnix(const std::string& name)
         return -1;
     }
 
-    sockaddr_un addr = {};
-    addr.sun_family  = AF_UNIX;
-
-    socklen_t addrlen = 0;
-    if (!name.empty() && name[0] == '@')
+    sockaddr_un addr    = {};
+    socklen_t   addrlen = 0;
+    if (!BuildUnixAddr(name, addr, addrlen))
     {
-        // Abstract socket: leading null byte, name starts at sun_path[1], no trailing null.
-        std::string abstract_name = name.substr(1);
-        if (abstract_name.size() + 1 > sizeof(addr.sun_path))
-        {
-            GFXRECON_LOG_ERROR("Remote channel: abstract socket name '%s' is too long", name.c_str());
-            close(fd);
-            return -1;
-        }
-        addr.sun_path[0] = '\0';
-        memcpy(addr.sun_path + 1, abstract_name.data(), abstract_name.size());
-        addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + abstract_name.size());
-    }
-    else
-    {
-        if (name.size() + 1 > sizeof(addr.sun_path))
-        {
-            GFXRECON_LOG_ERROR("Remote channel: Unix socket path '%s' is too long", name.c_str());
-            close(fd);
-            return -1;
-        }
-        memcpy(addr.sun_path, name.data(), name.size());
-        addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + name.size() + 1);
+        close(fd);
+        return -1;
     }
 
     if (connect(fd, reinterpret_cast<sockaddr*>(&addr), addrlen) != 0)
     {
         GFXRECON_LOG_ERROR("Remote channel: failed to connect to Unix socket '%s': %s", name.c_str(), strerror(errno));
         close(fd);
+        return -1;
+    }
+
+    SetNoSigPipe(fd);
+    return fd;
+}
+
+// Bind and listen a TCP socket described by "host:port". Returns a listening fd, or -1 on failure.
+int ListenTcp(const std::string& host_port)
+{
+    size_t colon = host_port.find_last_of(':');
+    if (colon == std::string::npos)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: invalid TCP address '%s' (expected host:port)", host_port.c_str());
+        return -1;
+    }
+
+    std::string host = host_port.substr(0, colon);
+    std::string port = host_port.substr(colon + 1);
+
+    addrinfo hints    = {};
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags    = AI_PASSIVE;
+
+    addrinfo* results = nullptr;
+    int       err     = getaddrinfo(host.empty() ? nullptr : host.c_str(), port.c_str(), &hints, &results);
+    if (err != 0)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to resolve '%s': %s", host_port.c_str(), gai_strerror(err));
+        return -1;
+    }
+
+    int fd = -1;
+    for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next)
+    {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == -1)
+        {
+            continue;
+        }
+        int on = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+        if (bind(fd, ai->ai_addr, ai->ai_addrlen) == 0 && listen(fd, 1) == 0)
+        {
+            break;
+        }
+        close(fd);
+        fd = -1;
+    }
+
+    freeaddrinfo(results);
+
+    if (fd == -1)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to listen on '%s'", host_port.c_str());
+    }
+    return fd;
+}
+
+// Bind and listen a Unix domain socket. A leading '@' in name selects the abstract namespace. Returns a listening fd,
+// or -1 on failure.
+int ListenUnix(const std::string& name)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd == -1)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to create Unix socket: %s", strerror(errno));
+        return -1;
+    }
+
+    sockaddr_un addr    = {};
+    socklen_t   addrlen = 0;
+    if (!BuildUnixAddr(name, addr, addrlen))
+    {
+        close(fd);
+        return -1;
+    }
+
+    // Filesystem-backed sockets fail to bind if a stale node remains; abstract names (leading '@') need no unlink.
+    if (name.empty() || name[0] != '@')
+    {
+        unlink(name.c_str());
+    }
+
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), addrlen) != 0 || listen(fd, 1) != 0)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to listen on Unix socket '%s': %s", name.c_str(), strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+// Wait up to timeout_seconds for a connection on listen_fd, then accept it. Returns the accepted fd, or -1 on timeout
+// or error.
+int AcceptWithTimeout(int listen_fd, int timeout_seconds)
+{
+    pollfd pfd = {};
+    pfd.fd     = listen_fd;
+    pfd.events = POLLIN;
+
+    int ready = poll(&pfd, 1, timeout_seconds * 1000);
+    if (ready == 0)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: timed out after %d seconds waiting for a controller connection",
+                           timeout_seconds);
+        return -1;
+    }
+    if (ready < 0)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: poll failed while waiting for a controller connection: %s",
+                           strerror(errno));
+        return -1;
+    }
+
+    int fd = accept(listen_fd, nullptr, nullptr);
+    if (fd == -1)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to accept controller connection: %s", strerror(errno));
         return -1;
     }
 
@@ -208,6 +344,48 @@ bool RemoteChannel::Connect(const std::string& address)
                            address.c_str());
         return false;
     }
+
+    if (fd_ == -1)
+    {
+        return false;
+    }
+
+    sender_thread_ = std::thread(&RemoteChannel::SenderThread, this);
+    return true;
+}
+
+bool RemoteChannel::Listen(const std::string& address)
+{
+    Disconnect();
+
+    constexpr const char kTcpPrefix[]  = "tcp:";
+    constexpr const char kUnixPrefix[] = "unix:";
+
+    if (address.rfind(kTcpPrefix, 0) == 0)
+    {
+        listen_fd_ = ListenTcp(address.substr(sizeof(kTcpPrefix) - 1));
+    }
+    else if (address.rfind(kUnixPrefix, 0) == 0)
+    {
+        listen_fd_ = ListenUnix(address.substr(sizeof(kUnixPrefix) - 1));
+    }
+    else
+    {
+        GFXRECON_LOG_ERROR("Remote channel: unrecognized address '%s' (expected tcp: or unix: prefix)",
+                           address.c_str());
+        return false;
+    }
+
+    if (listen_fd_ == -1)
+    {
+        return false;
+    }
+
+    fd_ = AcceptWithTimeout(listen_fd_, kAcceptTimeoutSeconds);
+
+    // The listening socket is no longer needed once a single controller has connected.
+    close(listen_fd_);
+    listen_fd_ = -1;
 
     if (fd_ == -1)
     {
@@ -250,6 +428,13 @@ void RemoteChannel::Disconnect()
     {
         close(fd_);
         fd_ = -1;
+    }
+
+    // Covers the Listen() paths that fail before a connection is accepted (bind/listen failure or accept timeout).
+    if (listen_fd_ != -1)
+    {
+        close(listen_fd_);
+        listen_fd_ = -1;
     }
 
     send_queue_.clear();
@@ -524,6 +709,12 @@ bool RemoteChannel::RecvExact(void* buf, size_t size)
 #else // WIN32: socket transport is not supported; all methods are no-ops.
 
 bool RemoteChannel::Connect(const std::string& address)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(address);
+    return false;
+}
+
+bool RemoteChannel::Listen(const std::string& address)
 {
     GFXRECON_UNREFERENCED_PARAMETER(address);
     return false;

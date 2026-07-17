@@ -41,9 +41,10 @@
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(util)
 
-// RemoteChannel connects gfxrecon-replay (the client) to a controller process (the server) over a socket for
-// bidirectional I/O. The controller sends replay settings; replay sends back log messages, progress, screenshots, and
-// dump-resources files.
+// RemoteChannel links gfxrecon-replay to a controller process over a socket for bidirectional I/O. The controller
+// sends replay settings; replay sends back log messages, progress, screenshots, and dump-resources files. Replay can
+// establish the socket either as the client (Connect(), dialing out to a listening controller) or as the server
+// (Listen(), accepting a controller that dials in). Once the socket exists, everything downstream is identical.
 //
 // Wire format: each frame is a little-endian uint32_t length prefix followed by that many payload bytes. Structured
 // messages are JSON frames. A binary file payload is sent as a JSON "file" metadata frame immediately followed by a raw
@@ -65,6 +66,11 @@ class RemoteChannel
     //   "unix:/path"     - filesystem-backed Unix domain socket
     // Returns true on success.
     bool Connect(const std::string& address);
+
+    // Listen for a controller instead of dialing out. Binds and listens on address (same forms as Connect), then
+    // accepts a single controller connection, waiting up to a bounded timeout. On success fd_ holds the accepted
+    // socket and downstream use is identical to Connect(). Returns false on bind/listen failure or accept timeout.
+    bool Listen(const std::string& address);
 
     bool IsConnected() const;
     void Disconnect();
@@ -122,6 +128,7 @@ class RemoteChannel
     bool RecvExact(void* buf, size_t size);
 
     int fd_{ -1 };
+    int listen_fd_{ -1 }; // Listening socket in Listen() mode; closed once a connection is accepted.
 
     std::thread                      sender_thread_;
     std::mutex                       queue_mutex_;
