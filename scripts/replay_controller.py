@@ -171,6 +171,7 @@ def handle_session(conn, replay_args, output_dir, hello=None):
     success = False
     prev_msg_type = None
     last_frame = None
+    last_block = None
     last_op = None
     last_current = None
     last_total = None
@@ -197,6 +198,7 @@ def handle_session(conn, replay_args, output_dir, hello=None):
             # Frame-level 'progress' and bounded 'operation_progress' share one in-place status line.
             if msg_type == 'progress':
                 last_frame = msg.get('frame')
+                last_block = msg.get('block')
             else:
                 last_op = msg.get('operation', 'operation')
                 last_current = msg.get('current')
@@ -208,7 +210,10 @@ def handle_session(conn, replay_args, output_dir, hello=None):
             # 'frame' may be unknown if an operation reports before any frame progress.
             parts = []
             if last_frame is not None:
-                parts.append(f"frame {last_frame}")
+                frame_part = f"frame {last_frame}"
+                if last_block is not None:
+                    frame_part += f", block {last_block}"
+                parts.append(frame_part)
             if last_current is not None:
                 parts.append(f"{last_op} {last_current}/{last_total}")
             print(f"--- progress: {', '.join(parts)}")

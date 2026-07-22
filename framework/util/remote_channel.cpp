@@ -553,9 +553,9 @@ void RemoteChannel::SendLog(LoggingSeverity severity, const std::string& message
     SendJson({ { "type", "log" }, { "level", SeverityToLevelString(severity) }, { "message", message } });
 }
 
-void RemoteChannel::SendProgress(uint64_t frame)
+void RemoteChannel::SendProgress(uint64_t frame, uint64_t block)
 {
-    SendJson({ { "type", "progress" }, { "frame", frame } });
+    SendJson({ { "type", "progress" }, { "frame", frame }, { "block", block } });
 }
 
 void RemoteChannel::SendDone(bool success)
@@ -763,9 +763,10 @@ void RemoteChannel::SendLog(LoggingSeverity severity, const std::string& message
     GFXRECON_UNREFERENCED_PARAMETER(message);
 }
 
-void RemoteChannel::SendProgress(uint64_t frame)
+void RemoteChannel::SendProgress(uint64_t frame, uint64_t block)
 {
     GFXRECON_UNREFERENCED_PARAMETER(frame);
+    GFXRECON_UNREFERENCED_PARAMETER(block);
 }
 
 void RemoteChannel::SendDone(bool success)

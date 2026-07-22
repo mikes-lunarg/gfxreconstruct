@@ -91,7 +91,7 @@ class RemoteChannel
     void SendJson(const nlohmann::json& msg);
     void SendFile(const std::string& name, const void* data, size_t size);
     void SendLog(LoggingSeverity severity, const std::string& message);
-    void SendProgress(uint64_t frame);
+    void SendProgress(uint64_t frame, uint64_t block);
     void SendDone(bool success); // Also calls Disconnect().
 
     // Register (or clear, with nullptr) the process-wide channel. Called once during remote setup and cleared during

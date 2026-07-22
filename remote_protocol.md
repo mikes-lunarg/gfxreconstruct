@@ -87,7 +87,7 @@ replay     → controller:  {"type":"ready"}
 
 ```json
 {"type":"log","level":"info","message":"..."}
-{"type":"progress","frame":42}
+{"type":"progress","frame":42,"block":1234}
 {"type":"operation_progress","operation":"dump_resources","current":37,"total":90}
 {"type":"file","name":"dump/frame_0042.png","size":204800}
 <204800 raw bytes — separate binary frame, no encoding>
@@ -98,7 +98,12 @@ replay     → controller:  {"type":"ready"}
 
 ## Progress Messages
 
-- **Frame-level** — `{"type":"progress","frame":N}`, emitted per replayed frame.
+- **Frame-level** — `{"type":"progress","frame":N,"block":B}`, emitted per replayed
+  frame. Both `frame` and `block` are monotonic positions, not fractions: the
+  capture file carries no total frame or block count, so no percentage is
+  reported. A percentage would require a total stamped at capture time (a future
+  capture-side addition) or a full pre-scan, which is impossible for a streamed
+  capture. Use `block` for a finer-grained position and rate than `frame` alone.
 - **Operation-level** — `{"type":"operation_progress","operation":<op>,"current":X,"total":Y}`,
   a bounded-progress message with a running total. Used by dump-resources, where
   `total` is the sum of all targeted commands (draw + dispatch + trace-rays +
