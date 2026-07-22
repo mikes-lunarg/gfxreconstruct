@@ -361,7 +361,8 @@ bool Application::PlaySingleFrame()
         {
             if (remote_channel_ != nullptr)
             {
-                remote_channel_->SendProgress(file_processor_->GetCurrentFrameNumber());
+                remote_channel_->SendProgress(file_processor_->GetCurrentFrameNumber(),
+                                              file_processor_->GetCurrentBlockIndex());
             }
 
             if (file_processor_->GetCurrentFrameNumber() == pause_frame_)
