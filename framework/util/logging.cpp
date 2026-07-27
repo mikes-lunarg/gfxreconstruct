@@ -226,6 +226,27 @@ void LoggingManager::UpdateDebugViewTarget(bool enabled)
 #endif // defined(_WIN32)
 }
 
+void LoggingManager::UpdateRemoteTarget(bool enabled)
+{
+    const std::lock_guard<std::mutex> lock(target_mut_);
+
+    if (enabled)
+    {
+        if (!logging_targets_[kTarget_Remote])
+        {
+            logging_targets_[kTarget_Remote] = std::make_unique<logging::LoggingTargetRemote>();
+            GFXRECON_ASSERT(logging_targets_[kTarget_Remote]);
+        }
+
+        logging_targets_[kTarget_Remote]->SetEnable(true);
+    }
+    else if (logging_targets_[kTarget_Remote])
+    {
+        // Just disable it
+        logging_targets_[kTarget_Remote]->SetEnable(false);
+    }
+}
+
 GFXRECON_END_NAMESPACE(logging)
 
 Log::Settings      Log::settings_;
@@ -283,6 +304,11 @@ void Log::UpdateLogManagerComponents(gfxrecon::util::logging::LoggingManager& lo
 void Log::SetFatalCallback(FatalCallback callback)
 {
     fatal_callback_ = std::move(callback);
+}
+
+void Log::UpdateRemoteTarget(bool enabled)
+{
+    logging::LoggingManager::GetSingleton().UpdateRemoteTarget(enabled);
 }
 
 void Log::Init(LoggingSeverity min_severity)

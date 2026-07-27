@@ -76,7 +76,7 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
     // Replace the local arguments with the settings provided by the controller.
     arg_parser = util::ArgumentParser(false, remote_args.c_str(), kOptions, kArguments);
 
-    // Register the channel so file writers (screenshots, dump-resources) stream their output to the controller.
+    // Register the channel so log output and file writes (screenshots, dump-resources) stream to the controller.
     util::RemoteChannel::SetActiveChannel(&channel);
 
     return RemoteSetupResult::kConnected;
@@ -84,7 +84,7 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
 
 void ShutdownRemoteChannel(util::RemoteChannel& channel, bool success)
 {
-    // Stop file writes before notifying the controller that replay is complete.
+    // Stop relaying log output and file writes before notifying the controller that replay is complete.
     util::RemoteChannel::SetActiveChannel(nullptr);
     channel.SendDone(success);
 }
