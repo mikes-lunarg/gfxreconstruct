@@ -31,7 +31,6 @@
 #endif
 
 #include <fstream>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -50,7 +49,7 @@ enum LoggingTargetType
     kTarget_StdErr,
     kTarget_FileOut,
     kTarget_DebugView,
-    kTarget_Callback,
+    kTarget_Remote,
 
     kTarget_Count
 };
@@ -204,33 +203,16 @@ class LoggingTargetFile : public LoggingTargetBase
     inline static std::mutex file_mut_;
 };
 
-// Forwards each log message to a user-supplied callback. Used to relay log output over a RemoteChannel. The callback
-// receives the fully-formatted, non-indented message string.
-class LoggingTargetCallback : public LoggingTargetBase
+class LoggingTargetRemote : public LoggingTargetBase
 {
   public:
-    using Callback = std::function<void(LoggingSeverity, const std::string&)>;
-
-    LoggingTargetCallback()
+    LoggingTargetRemote()
     {
-        // Enabled as soon as it is constructed; the manager only creates this target when a callback is registered.
-        enabled_ = true;
-        // The callback consumer applies its own formatting, so send plain (non-indented) messages.
+        // The controller applies its own formatting, so send plain (non-indented) messages.
         use_indent_ = false;
     }
 
-    void SetCallback(Callback callback) { callback_ = std::move(callback); }
-
-    void LogMessage(LoggingSeverity severity, const std::string& message) override
-    {
-        if (callback_)
-        {
-            callback_(severity, message);
-        }
-    }
-
-  private:
-    Callback callback_;
+    void LogMessage(LoggingSeverity severity, const std::string& message) override;
 };
 
 GFXRECON_END_NAMESPACE(logging)

@@ -110,6 +110,11 @@ class RemoteChannel
     // no-op when no channel is connected. Emits {"type":"operation_progress","operation":<op>,"current":X,"total":Y}.
     static void SendActiveProgress(const char* operation, uint64_t current, uint64_t total);
 
+    // Relay a log message to the active channel; a no-op when no channel is registered or connected. Lets the logging
+    // module's remote target reach the channel without holding a pointer to it. Safe to call from any thread, and from
+    // within a log call: the send path never logs, so it cannot re-enter logging.
+    static void SendActiveLog(LoggingSeverity severity, const std::string& message);
+
   private:
     // Append a length-prefixed frame to buffer.
     static void AppendFrame(std::vector<uint8_t>& buffer, const void* data, uint32_t size);
@@ -142,8 +147,8 @@ class RemoteChannel
     std::condition_variable trigger_cv_;
     std::deque<std::string> trigger_queue_; // Guarded by trigger_mutex_.
 
-    // Process-wide channel used by the static SendActiveFile() / SendActiveProgress(). Only one controller connection
-    // exists per process.
+    // Process-wide channel used by the static SendActive*() helpers. Only one controller connection exists per
+    // process.
     static RemoteChannel* active_channel_;
 };
 

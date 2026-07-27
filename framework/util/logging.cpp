@@ -226,29 +226,24 @@ void LoggingManager::UpdateDebugViewTarget(bool enabled)
 #endif // defined(_WIN32)
 }
 
-void LoggingManager::UpdateCallbackTarget(bool                                                     enabled,
-                                          std::function<void(LoggingSeverity, const std::string&)> callback)
+void LoggingManager::UpdateRemoteTarget(bool enabled)
 {
     const std::lock_guard<std::mutex> lock(target_mut_);
 
     if (enabled)
     {
-        if (!logging_targets_[kTarget_Callback])
+        if (!logging_targets_[kTarget_Remote])
         {
-            logging_targets_[kTarget_Callback] = std::make_unique<logging::LoggingTargetCallback>();
-            GFXRECON_ASSERT(logging_targets_[kTarget_Callback]);
+            logging_targets_[kTarget_Remote] = std::make_unique<logging::LoggingTargetRemote>();
+            GFXRECON_ASSERT(logging_targets_[kTarget_Remote]);
         }
 
-        auto* target = static_cast<logging::LoggingTargetCallback*>(logging_targets_[kTarget_Callback].get());
-        target->SetCallback(std::move(callback));
-        target->SetEnable(true);
-        target->SetSeverity(minimum_severity_);
+        logging_targets_[kTarget_Remote]->SetEnable(true);
     }
-    else if (logging_targets_[kTarget_Callback])
+    else if (logging_targets_[kTarget_Remote])
     {
-        // Disable and drop the callback so the now-stale target holds no reference to it.
-        logging_targets_[kTarget_Callback]->SetEnable(false);
-        static_cast<logging::LoggingTargetCallback*>(logging_targets_[kTarget_Callback].get())->SetCallback(nullptr);
+        // Just disable it
+        logging_targets_[kTarget_Remote]->SetEnable(false);
     }
 }
 
@@ -309,6 +304,11 @@ void Log::UpdateLogManagerComponents(gfxrecon::util::logging::LoggingManager& lo
 void Log::SetFatalCallback(FatalCallback callback)
 {
     fatal_callback_ = std::move(callback);
+}
+
+void Log::UpdateRemoteTarget(bool enabled)
+{
+    logging::LoggingManager::GetSingleton().UpdateRemoteTarget(enabled);
 }
 
 void Log::Init(LoggingSeverity min_severity)
@@ -373,12 +373,6 @@ void Log::UpdateWithSettings(const util::Log::Settings& settings)
 
     // Update the log targets as necessary
     UpdateLogManagerComponents(log_mgr);
-}
-
-void Log::SetLogCallback(std::function<void(LoggingSeverity, const std::string&)> fn)
-{
-    const bool enabled = static_cast<bool>(fn);
-    logging::LoggingManager::GetSingleton().UpdateCallbackTarget(enabled, std::move(fn));
 }
 
 void Log::LogMessage(
