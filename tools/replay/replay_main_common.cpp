@@ -27,6 +27,7 @@
 #include "decode/preload_file_processor.h"
 #include "graphics/frame_loop_info.h"
 #include "util/feature_module_registry.h"
+#include "util/input_file_store.h"
 #include "util/logging.h"
 #include "util/remote_channel.h"
 
@@ -72,6 +73,20 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
     // Replace the local arguments with the settings provided by the controller.
     arg_parser = util::ArgumentParser(false, remote_args.c_str(), kOptions, kArguments);
 
+    // Point options at the copies the controller pushed. A value it did not push is left alone, which is the escape
+    // hatch for a file already staged on the device.
+    for (const char* argument : kRemoteInputFileArguments)
+    {
+        if (arg_parser.IsArgumentSet(argument))
+        {
+            const std::string* path = util::InputFileStore::Resolve(arg_parser.GetArgumentValue(argument));
+            if (path != nullptr)
+            {
+                arg_parser.SetArgumentValue(argument, *path);
+            }
+        }
+    }
+
     // Register the channel so log output and file writes (screenshots, dump-resources) stream to the controller.
     util::RemoteChannel::SetActiveChannel(&channel);
 
@@ -83,6 +98,7 @@ void ShutdownRemoteChannel(util::RemoteChannel& channel, bool success)
     // Stop relaying log output and file writes before notifying the controller that replay is complete.
     util::RemoteChannel::SetActiveChannel(nullptr);
     channel.SendDone(success);
+    util::InputFileStore::Cleanup();
 }
 
 void LoadFeatures(std::vector<std::unique_ptr<ReplayFeatureBase>>& features)

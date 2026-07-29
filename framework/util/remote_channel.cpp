@@ -22,7 +22,10 @@
 
 #include "util/remote_channel.h"
 
+#include "util/input_file_store.h"
 #include "util/logging.h"
+
+#include <cinttypes>
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
@@ -457,21 +460,45 @@ std::string RemoteChannel::Handshake()
     timeout.tv_sec  = 5;
     setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
-    std::vector<uint8_t> frame;
-    if (!RecvFrame(frame))
+    // "settings" ends the controller's opening turn; any "file" messages precede it. Reading until it arrives means a
+    // controller that pushes no files sends nothing extra, so no count or terminator is needed.
+    std::string args;
+    for (;;)
     {
-        GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for settings");
+        std::vector<uint8_t> frame;
+        if (!RecvFrame(frame))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for settings");
+            return "";
+        }
+
+        nlohmann::json msg = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
+        if (msg.is_discarded() || !msg.contains("type") || !msg["type"].is_string())
+        {
+            GFXRECON_LOG_ERROR("Remote channel: handshake received malformed message");
+            return "";
+        }
+
+        const std::string type = msg["type"].get<std::string>();
+        if (type == "settings")
+        {
+            args = msg.value("args", std::string());
+            break;
+        }
+
+        if (type == "file")
+        {
+            if (!ReceiveInputFile(msg))
+            {
+                return "";
+            }
+            continue;
+        }
+
+        GFXRECON_LOG_ERROR("Remote channel: handshake received unexpected \"%s\" message", type.c_str());
         return "";
     }
 
-    std::string    args;
-    nlohmann::json msg = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
-    if (msg.is_discarded() || !msg.contains("type") || msg["type"] != "settings")
-    {
-        GFXRECON_LOG_ERROR("Remote channel: handshake received unexpected message");
-        return "";
-    }
-    args = msg.value("args", std::string());
     if (args.empty())
     {
         GFXRECON_LOG_ERROR("Remote channel: controller provided empty settings args");
@@ -486,6 +513,51 @@ std::string RemoteChannel::Handshake()
     receiver_thread_ = std::thread(&RemoteChannel::ReceiverThread, this);
 
     return args;
+}
+
+bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
+{
+    // Not value(), which throws on a type mismatch: a controller bug should fail the handshake, not kill replay.
+    const auto name_entry = header.find("name");
+    if ((name_entry == header.end()) || !name_entry->is_string())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: input file message is missing a name");
+        return false;
+    }
+    const std::string name = name_entry->get<std::string>();
+
+    // The frame's length prefix is authoritative; size is only cross-checked, so a mis-framed transfer fails here
+    // rather than surfacing later as a corrupt input file.
+    std::vector<uint8_t> data;
+    if (!RecvFrame(data))
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed receiving contents of input file \"%s\"", name.c_str());
+        return false;
+    }
+
+    const auto size_entry = header.find("size");
+    if ((size_entry == header.end()) || !size_entry->is_number_unsigned())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: input file \"%s\" message is missing a size", name.c_str());
+        return false;
+    }
+
+    const uint64_t expected_size = size_entry->get<uint64_t>();
+    if (expected_size != data.size())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: input file \"%s\" declared %" PRIu64 " bytes but %" PRIu64 " were received",
+                           name.c_str(),
+                           expected_size,
+                           static_cast<uint64_t>(data.size()));
+        return false;
+    }
+
+    // The controller's name, never where the file landed: target-side handling stays unspecified.
+    GFXRECON_LOG_INFO("Remote channel: received input file \"%s\" (%" PRIu64 " bytes)",
+                      name.c_str(),
+                      static_cast<uint64_t>(data.size()));
+
+    return InputFileStore::Add(name, data);
 }
 
 bool RemoteChannel::TryPopTrigger(std::string* action)
@@ -772,6 +844,12 @@ void RemoteChannel::SendProgress(uint64_t frame, uint64_t block)
 void RemoteChannel::SendDone(bool success)
 {
     GFXRECON_UNREFERENCED_PARAMETER(success);
+}
+
+bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(header);
+    return false;
 }
 
 bool RemoteChannel::RecvFrame(std::vector<uint8_t>& out)

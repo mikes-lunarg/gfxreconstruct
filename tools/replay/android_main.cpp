@@ -30,6 +30,7 @@
 #include "format/format.h"
 #include "util/android/activity.h"
 #include "util/android/intent.h"
+#include "util/input_file_store.h"
 #include "util/logging.h"
 #include "util/platform.h"
 #include "util/remote_channel.h"
@@ -86,6 +87,9 @@ void android_main(struct android_app* app)
 
     bool run     = true;
     bool success = false;
+
+    // An app process has no reliable $TMPDIR or /tmp, so scratch input files go under the app's private data dir.
+    gfxrecon::util::InputFileStore::SetScratchRoot(app->activity->internalDataPath);
 
     // If --remote is specified, the controller supplies the replay settings. Because the user explicitly requested
     // remote control, treat any failure to establish it as fatal rather than silently falling back to the intent

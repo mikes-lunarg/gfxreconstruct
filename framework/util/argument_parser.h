@@ -50,6 +50,11 @@ class ArgumentParser
     bool                            IsOptionSet(const std::string& option) const;
     bool                            IsArgumentSet(const std::string& argument) const;
     const std::string&              GetArgumentValue(const std::string& argument) const;
+
+    // Overwrites the value of an argument already present on the command line. Does nothing for an unknown or unset
+    // argument, so it cannot introduce a value the user did not ask for.
+    void SetArgumentValue(const std::string& argument, const std::string& value);
+
     size_t                          GetPositionalArgumentsCount() const { return positional_arguments_present_.size(); }
     const std::vector<std::string>& GetPositionalArguments() const { return positional_arguments_present_; }
 

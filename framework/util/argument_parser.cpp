@@ -306,5 +306,15 @@ const std::string& ArgumentParser::GetArgumentValue(const std::string& argument)
     return empty_string;
 }
 
+void ArgumentParser::SetArgumentValue(const std::string& argument, const std::string& value)
+{
+    auto ret_iterator = arguments_indices_.find(argument);
+
+    if ((ret_iterator != arguments_indices_.end()) && arguments_present_[ret_iterator->second])
+    {
+        argument_values_[ret_iterator->second] = value;
+    }
+}
+
 GFXRECON_END_NAMESPACE(util)
 GFXRECON_END_NAMESPACE(gfxrecon)

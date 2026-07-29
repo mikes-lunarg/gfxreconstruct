@@ -128,6 +128,10 @@ class RemoteChannel
     // Receiver thread entry point: queues incoming trigger actions until the controller disconnects.
     void ReceiverThread();
 
+    // Handle a handshake "file" message: receive the binary frame that follows header and hand it to the input file
+    // store. Returns false on a malformed transfer, which fails the handshake.
+    bool ReceiveInputFile(const nlohmann::json& header);
+
     bool RecvFrame(std::vector<uint8_t>& out);
     bool SendAll(const void* buf, size_t size);
     bool RecvExact(void* buf, size_t size);

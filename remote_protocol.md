@@ -63,7 +63,9 @@ Every frame is a length-prefixed byte string:
 
 ```
 replay     → controller:  {"type":"hello","version":"1"}
-controller → replay:      {"type":"settings","args":"--loop-count 3 /sdcard/capture.gfxr"}
+controller → replay:      {"type":"file","name":"dr.json","size":812}   (0..N, optional)
+                          <812 raw bytes — separate binary frame, no encoding>
+controller → replay:      {"type":"settings","args":"--dump-resources dr.json /sdcard/capture.gfxr"}
 replay     → controller:  {"type":"ready"}
 [replay runs]
 ```
@@ -71,6 +73,10 @@ replay     → controller:  {"type":"ready"}
 - Replay sends `hello` first regardless of which side dialed.
 - `args` is a complete CLI-style argument string, from which replay rebuilds its
   `ArgumentParser`. This list completely replaces the traditional command-line arguments
+- `settings` ends the controller's opening turn, so any `file` messages must
+  precede it. Replay reads frames until `settings` arrives, which is why the
+  protocol needs neither a file count nor a terminator: a controller that pushes
+  no files sends nothing extra. See [Input Files](#input-files).
 - A 5-second receive timeout applies during the handshake, and is cleared once
   the handshake succeeds.
 
@@ -79,6 +85,8 @@ replay     → controller:  {"type":"ready"}
 ### Controller → replay
 
 ```json
+{"type":"file","name":"dr.json","size":812}   // handshake only, before "settings"
+<812 raw bytes — separate binary frame, no encoding>
 {"type":"settings","args":"<full cli args string>"}
 {"type":"trigger","action":"pause"}   // "pause" | "resume" | "step" | "stop"
 ```
@@ -115,6 +123,45 @@ Triggers (`pause` / `resume` / `step` / `stop`) are received on replay's
 receiver thread and queued separately from block processing. The replay thread
 applies queued actions between blocks. While paused with a remote attached, it
 waits up to 10 ms on the trigger queue rather than blocking on window events.
+
+## Input Files
+
+Every path in the `settings` args string resolves on the **replay device's**
+filesystem, so a file the run needs as input is unreachable when it only exists
+on the controller's machine. The controller can instead push it during the
+handshake and name it by the value of the matching option.
+
+Covered options — the value is a name the controller supplied, not a device path:
+
+| Option | Contents |
+|---|---|
+| `--dump-resources` | dump-resources JSON |
+| `--frame-warm-up-spirv` | SPIR-V module |
+| `--load-pipeline-cache` | pipeline cache blob |
+
+Rules:
+
+- A `file` message is valid only during the handshake, before `settings`.
+  Replay rejects one at any other point.
+- The binary frame's own length prefix is authoritative. The header's `size` is
+  cross-checked against it and a mismatch fails the handshake, catching a
+  controller that framed the transfer wrongly instead of letting it surface much
+  later as a corrupt input file.
+- `name` is a lookup key, not a path: it must be a bare filename, and it is
+  matched literally against the option's value in the args string. Keep the
+  extension — `--dump-resources` selects its parser by the `.json` suffix.
+- A supplied file takes precedence over a same-named file on the target. An
+  option value that was not supplied is left alone, so a file already staged on
+  the device still works.
+- Any malformed transfer fails the handshake rather than falling back, matching
+  the rest of the remote feature.
+
+What replay does with the bytes is deliberately unspecified — a controller must
+not depend on where, or whether, they land on the target's filesystem.
+
+Out of scope: `--replace-shaders` (a directory), `--replay-event-plugin-path` (a
+shared library needing a real path and matching ABI), and the capture file
+itself.
 
 ## File Streaming
 
@@ -154,11 +201,17 @@ controller implementation:
 - `--adb` — set up the appropriate adb mapping and launch the replay activity on
   a connected Android device.
 - All other replay arguments after `--` are forwarded to the remote replay application
+- Pushes local input files: when the value of an [input file option](#input-files)
+  names a file on the controller's machine, it is sent during the handshake and
+  the option value is rewritten to the bare filename.
 - Reads `p` / `r` / `s` / `q` from stdin to send pause/resume/step/stop triggers.
 
 ```
-python scripts/replay_controller.py --connect localhost:9000 --adb -- /sdcard/capture.gfxr --dump-resources /sdcard/dr.json
+python scripts/replay_controller.py --connect localhost:9000 --adb -- /sdcard/capture.gfxr --dump-resources dr.json
 ```
+
+Only the capture file has to exist on the device; `dr.json` is read from the
+controller's working directory and pushed.
 
 ## CLI Reference
 
