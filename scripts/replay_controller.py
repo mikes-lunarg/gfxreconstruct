@@ -78,6 +78,43 @@ TRIGGER_COMMANDS = {
     'stop': 'stop',
 }
 
+# Replay options whose value names a file replay reads. When the value is a file on this machine, it is pushed to
+# replay during the handshake. Keep in sync with kRemoteInputFileArguments in tools/replay/replay_settings.h.
+INPUT_FILE_OPTIONS = (
+    '--dump-resources',
+    '--frame-warm-up-spirv',
+    '--load-pipeline-cache',
+)
+
+
+def collect_input_files(replay_args):
+    '''Split local input files out of replay_args.
+
+    Returns (args, files), where args has each local input file's value replaced by its bare name and files is a
+    list of (name, contents) pairs to push during the handshake. A value that is not a file on this machine (a
+    path on the replay device, or the --dump-resources 'submit,command,drawcall' form) passes through untouched.
+    '''
+    args = list(replay_args)
+    files = []
+    seen = {}
+    for index, token in enumerate(args[:-1]):
+        if token not in INPUT_FILE_OPTIONS:
+            continue
+        value = args[index + 1]
+        if not os.path.isfile(value):
+            continue
+        name = os.path.basename(value)
+        if name in seen and seen[name] != value:
+            print(
+                f"Warning: '{name}' pushed from both {seen[name]} and {value}; "
+                'replay will see only the last',
+                file=sys.stderr)
+        seen[name] = value
+        with open(value, 'rb') as source:
+            files.append((name, source.read()))
+        args[index + 1] = name
+    return args, files
+
 
 def recv_exact(conn, length):
     '''Read exactly length bytes, or return None if the peer closes early.'''
@@ -135,11 +172,13 @@ def start_command_reader():
     return commands
 
 
-def handle_session(conn, replay_args, output_dir, hello=None):
+def handle_session(conn, replay_args, output_dir, hello=None, input_files=()):
     '''Run the handshake and process messages until replay reports done.
 
     hello is replay's already-received greeting frame when the caller read it during connection setup
     (connect mode); when None (listen mode) it is read here.
+
+    input_files is a list of (name, contents) pairs pushed before the settings message.
     '''
     # Handshake: replay greets us, we reply with settings, replay acknowledges.
     if hello is None:
@@ -152,6 +191,12 @@ def handle_session(conn, replay_args, output_dir, hello=None):
         print(f'Unexpected first message: {hello}', file=sys.stderr)
         return False
     print(f"Connected to replay (protocol version {hello.get('version')})")
+
+    # Input files must precede the settings message, which ends our opening turn.
+    for name, blob in input_files:
+        send_json(conn, {'type': 'file', 'name': name, 'size': len(blob)})
+        send_frame(conn, blob)
+        print(f'Sent input file: {name} ({len(blob)} bytes)')
 
     send_json(conn, {'type': 'settings', 'args': replay_args})
     print(f'Sent settings: {replay_args}')
@@ -326,6 +371,10 @@ def main():
         parser.error(
             'No replay args given. Pass them after --, e.g. -- capture.gfxr')
 
+    # Every path in replay_args resolves on the replay device, so any input file that lives here must be pushed
+    # over the socket and its option value rewritten to the name replay will know it by.
+    replay_args, input_files = collect_input_files(replay_args)
+
     os.makedirs(args.output_dir, exist_ok=True)
 
     def parse_host_port(flag, spec):
@@ -397,7 +446,7 @@ def main():
         print(f'Connected to replay at {host}:{port}')
         with conn:
             success = handle_session(conn, ' '.join(replay_args),
-                                     args.output_dir, hello)
+                                     args.output_dir, hello, input_files)
 
         return 0 if success else 1
 
@@ -455,7 +504,10 @@ def main():
 
     print(f'Replay connected from {peer[0]}:{peer[1]}')
     with conn:
-        success = handle_session(conn, ' '.join(replay_args), args.output_dir)
+        success = handle_session(conn,
+                                 ' '.join(replay_args),
+                                 args.output_dir,
+                                 input_files=input_files)
 
     return 0 if success else 1
 

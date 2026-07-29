@@ -91,6 +91,14 @@ static void PrintFeatureSynopsisLines(const std::string& synopsis)
     }
 }
 
+// Replay options whose value names a file that replay reads. A remote controller pushes these during the handshake.
+// Keep in sync with INPUT_FILE_OPTIONS in scripts/replay_controller.py.
+const char* const kRemoteInputFileArguments[] = {
+    "--dump-resources",
+    "--frame-warm-up-spirv",
+    "--load-pipeline-cache",
+};
+
 static void PrintUsage(const char* exe_name)
 {
     std::string app_name = std::filesystem::path(exe_name).stem().string();
