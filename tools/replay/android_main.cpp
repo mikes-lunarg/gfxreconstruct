@@ -82,16 +82,15 @@ void android_main(struct android_app* app)
 
     gfxrecon::replay::LoadFeatures(g_features);
 
-    // Each Feature adds its own command-line entries to the shared name lists, so an entry
-    // exists only when the build contains the Feature that reads it. The ArgumentParser keeps
-    // its own copy of the names, so the two lists go out of scope as soon as it is built.
-    const std::string              args       = gfxrecon::util::GetIntentExtra(app, kArgsExtentKey);
-    gfxrecon::util::ArgumentParser arg_parser = [&args]() {
-        std::string options   = kOptions;
-        std::string arguments = kArguments;
-        AppendFeatureOptions(g_features, options, arguments);
-        return gfxrecon::util::ArgumentParser(false, args.c_str(), options, arguments);
-    }();
+    // Each Feature adds its own command-line entries to the shared name lists, so an entry exists only
+    // when the build contains the Feature that reads it. The lists outlive the parser because remote
+    // settings are parsed against the same names.
+    const std::string args      = gfxrecon::util::GetIntentExtra(app, kArgsExtentKey);
+    std::string       options   = kOptions;
+    std::string       arguments = kArguments;
+    AppendFeatureOptions(g_features, options, arguments);
+
+    gfxrecon::util::ArgumentParser arg_parser(false, args.c_str(), options, arguments);
 
     bool run     = true;
     bool success = false;
@@ -103,7 +102,7 @@ void android_main(struct android_app* app)
     // remote control, treat any failure to establish it as fatal rather than silently falling back to the intent
     // arguments.
     gfxrecon::util::RemoteChannel remote_channel;
-    if (gfxrecon::replay::SetupRemoteChannel(remote_channel, arg_parser) ==
+    if (gfxrecon::replay::SetupRemoteChannel(remote_channel, arg_parser, options, arguments) ==
         gfxrecon::replay::RemoteSetupResult::kFailed)
     {
         run = false;

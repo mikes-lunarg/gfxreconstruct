@@ -33,6 +33,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -75,10 +76,11 @@ class RemoteChannel
     bool IsConnected() const;
     void Disconnect();
 
-    // Perform the startup handshake. Sends "hello", waits for a "settings" message, then sends "ready". Returns the
-    // controller-supplied CLI args string, or "" if the handshake failed. On success, starts a receiver thread that
-    // queues incoming "trigger" messages for retrieval with TryPopTrigger() / WaitPopTrigger().
-    std::string Handshake();
+    // Perform the startup handshake. Sends "hello", waits for a "settings" message, then sends "ready". On success
+    // fills settings with the controller-supplied option name/value pairs (keys as described by ArgumentParser's
+    // settings-map constructor, values always strings) and starts a receiver thread that queues incoming "trigger"
+    // messages for retrieval with TryPopTrigger() / WaitPopTrigger().
+    bool Handshake(std::map<std::string, std::string>& settings);
 
     // Pop the next controller-requested trigger action ("pause", "resume", "step", "stop", ...), if any. Thread-safe.
     // WaitPopTrigger blocks for up to timeout waiting for an action to arrive.

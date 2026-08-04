@@ -60,7 +60,13 @@ enum class RemoteSetupResult
 // begin relaying log output to the controller. On failure the specific reason is logged (by RemoteChannel) and
 // kFailed is returned; the caller decides how to abort. Does nothing and returns kNotRequested when neither mode is
 // set.
-RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::ArgumentParser& arg_parser);
+// options and arguments are the tool's name lists with every loaded Feature's entries already
+// appended, the same lists the command-line parser was built from. Remote settings are parsed
+// against them so a Feature option means the same thing from a controller as from the command line.
+RemoteSetupResult SetupRemoteChannel(util::RemoteChannel&  channel,
+                                     util::ArgumentParser& arg_parser,
+                                     const std::string&    options,
+                                     const std::string&    arguments);
 
 // Stop relaying log output, then notify the controller that replay finished. Both steps are no-ops when channel is not
 // connected, so this is safe to call unconditionally.

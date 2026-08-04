@@ -446,11 +446,11 @@ void RemoteChannel::Disconnect()
     send_failed_    = false;
 }
 
-std::string RemoteChannel::Handshake()
+bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
 {
     if (fd_ == -1)
     {
-        return "";
+        return false;
     }
 
     SendJson({ { "type", "hello" }, { "version", "1" } });
@@ -462,27 +462,43 @@ std::string RemoteChannel::Handshake()
 
     // "settings" ends the controller's opening turn; any "file" messages precede it. Reading until it arrives means a
     // controller that pushes no files sends nothing extra, so no count or terminator is needed.
-    std::string args;
     for (;;)
     {
         std::vector<uint8_t> frame;
         if (!RecvFrame(frame))
         {
             GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for settings");
-            return "";
+            return false;
         }
 
         nlohmann::json msg = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
         if (msg.is_discarded() || !msg.contains("type") || !msg["type"].is_string())
         {
             GFXRECON_LOG_ERROR("Remote channel: handshake received malformed message");
-            return "";
+            return false;
         }
 
         const std::string type = msg["type"].get<std::string>();
         if (type == "settings")
         {
-            args = msg.value("args", std::string());
+            // Not value(), which throws on a type mismatch, as in ReceiveInputFile() below.
+            const auto options_entry = msg.find("options");
+            if ((options_entry == msg.end()) || !options_entry->is_object())
+            {
+                GFXRECON_LOG_ERROR("Remote channel: settings message is missing an options object");
+                return false;
+            }
+
+            // A JSON scalar is a controller-side mistake, never coerced.
+            for (const auto& option : options_entry->items())
+            {
+                if (!option.value().is_string())
+                {
+                    GFXRECON_LOG_ERROR("Remote channel: value of setting \"%s\" is not a string", option.key().c_str());
+                    return false;
+                }
+                settings[option.key()] = option.value().get<std::string>();
+            }
             break;
         }
 
@@ -490,19 +506,19 @@ std::string RemoteChannel::Handshake()
         {
             if (!ReceiveInputFile(msg))
             {
-                return "";
+                return false;
             }
             continue;
         }
 
         GFXRECON_LOG_ERROR("Remote channel: handshake received unexpected \"%s\" message", type.c_str());
-        return "";
+        return false;
     }
 
-    if (args.empty())
+    if (settings.empty())
     {
-        GFXRECON_LOG_ERROR("Remote channel: controller provided empty settings args");
-        return "";
+        GFXRECON_LOG_ERROR("Remote channel: controller provided no settings");
+        return false;
     }
 
     SendJson({ { "type", "ready" } });
@@ -512,7 +528,7 @@ std::string RemoteChannel::Handshake()
     setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     receiver_thread_ = std::thread(&RemoteChannel::ReceiverThread, this);
 
-    return args;
+    return true;
 }
 
 bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
@@ -799,9 +815,10 @@ bool RemoteChannel::IsConnected() const
 
 void RemoteChannel::Disconnect() {}
 
-std::string RemoteChannel::Handshake()
+bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
 {
-    return "";
+    GFXRECON_UNREFERENCED_PARAMETER(settings);
+    return false;
 }
 
 bool RemoteChannel::TryPopTrigger(std::string* action)
