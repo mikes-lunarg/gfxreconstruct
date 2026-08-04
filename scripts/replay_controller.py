@@ -35,21 +35,26 @@ Wire format: each frame is a little-endian uint32 length prefix followed by
 that many payload bytes. Structured messages are JSON. A binary file payload is
 a JSON "file" frame immediately followed by a raw binary frame.
 
+Replay settings travel as key/value pairs, not as a command line: a key is a
+replay option with its leading dashes stripped and '-' replaced by '_', and
+every value is a string. Write them after -- as key=value, or as a bare key for
+an option that takes no value; see settings_from_args().
+
 Desktop usage (replay connects out):
-    python3 scripts/replay_controller.py --listen 127.0.0.1:9001 -- --loop-count 3 capture.gfxr
+    python3 scripts/replay_controller.py --listen 127.0.0.1:9001 -- --loop-count=3 capture_file=capture.gfxr
     gfxrecon-replay --remote-connect tcp:localhost:9001
 
 Desktop usage (replay listens):
     gfxrecon-replay --remote-listen tcp:0.0.0.0:9001 capture.gfxr
-    python3 scripts/replay_controller.py --connect localhost:9001 -- --loop-count 3 capture.gfxr
+    python3 scripts/replay_controller.py --connect localhost:9001 -- --loop-count=3 capture_file=capture.gfxr
 
 Android usage (replay connects out, abstract unix socket forwarded to the PC):
     adb reverse localabstract:gfxrecon tcp:9001
-    python3 scripts/replay_controller.py --listen 127.0.0.1:9001 -- /sdcard/capture.gfxr
+    python3 scripts/replay_controller.py --listen 127.0.0.1:9001 -- capture_file=/sdcard/capture.gfxr
     # launch the replay activity with intent args: --remote-connect unix:@gfxrecon
 
 Android usage (replay listens, abstract unix socket forwarded to the PC):
-    python3 scripts/replay_controller.py --connect localhost:9001 --adb -- /sdcard/capture.gfxr
+    python3 scripts/replay_controller.py --connect localhost:9001 --adb -- capture_file=/sdcard/capture.gfxr
     # sets up: adb forward tcp:9001 localabstract:gfxrecon
     # launches the replay activity with intent args: --remote-listen unix:@gfxrecon
 '''
@@ -79,29 +84,92 @@ TRIGGER_COMMANDS = {
 }
 
 # Replay options whose value names a file replay reads. When the value is a file on this machine, it is pushed to
-# replay during the handshake. Keep in sync with kRemoteInputFileArguments in tools/replay/replay_settings.h.
+# replay during the handshake. Normalized settings keys; keep in sync with kRemoteInputFileArguments in
+# tools/replay/replay_settings.h, which holds the same options in their command-line spelling.
 INPUT_FILE_OPTIONS = (
-    '--dump-resources',
-    '--frame-warm-up-spirv',
-    '--load-pipeline-cache',
+    'dump_resources',
+    'frame_warm_up_spirv',
+    'load_pipeline_cache',
 )
 
 
-def collect_input_files(replay_args):
-    '''Split local input files out of replay_args.
+def normalize(token):
+    '''Convert a command-line spelling to its settings key: strip leading dashes, '-' becomes '_'.
 
-    Returns (args, files), where args has each local input file's value replaced by its bare name and files is a
-    list of (name, contents) pairs to push during the handshake. A value that is not a file on this machine (a
-    path on the replay device, or the --dump-resources 'submit,command,drawcall' form) passes through untouched.
+    >>> normalize('--loop-count')
+    'loop_count'
+    >>> normalize('mfr')
+    'mfr'
     '''
-    args = list(replay_args)
+    return token.lstrip('-').replace('-', '_')
+
+
+def assign(options, key, value):
+    '''Set options[key], rejecting a second, conflicting assignment of the same key.
+
+    A settings map cannot express a key twice, so one of the two would be silently dropped. Replay cannot catch
+    that -- the surviving key is perfectly valid -- so it has to be caught here.
+    '''
+    if key in options and options[key] != value:
+        raise ValueError(f"setting '{key}' given twice, as '{options[key]}' "
+                         f"and '{value}'")
+    options[key] = value
+
+
+def settings_from_args(tokens):
+    '''Build a settings dict from key=value tokens.
+
+    Each token is read on its own, with no reference to its neighbours or its position:
+
+      * 'key=value' sets key to value. Only the first '=' separates, so a value may contain more.
+      * A bare 'key' is an option that takes no value, set to 'true'.
+
+    Keys are normalized, so a replay option's leading dashes may be kept or dropped. What differs from a replay
+    command line is the '=' joining an option to its value, and the capture file being named by its key rather
+    than positional -- deliberately, since which options take a value is not knowable from the tokens alone.
+
+    >>> settings_from_args(['paused', 'loop_count=3', 'capture_file=cap.gfxr']) == {
+    ...     'paused': 'true', 'loop_count': '3', 'capture_file': 'cap.gfxr'}
+    True
+    >>> settings_from_args(['--paused', '--loop-count=3']) == {
+    ...     'paused': 'true', 'loop_count': '3'}
+    True
+    >>> settings_from_args(['fwo=-10,-10', 'screenshot_dir=/my dir']) == {
+    ...     'fwo': '-10,-10', 'screenshot_dir': '/my dir'}
+    True
+    >>> settings_from_args(['replay_event_plugin_params=a=b'])
+    {'replay_event_plugin_params': 'a=b'}
+    >>> settings_from_args(['gpu=0', 'gpu=1'])
+    Traceback (most recent call last):
+    ValueError: setting 'gpu' given twice, as '0' and '1'
+    >>> settings_from_args(['=orphan'])
+    Traceback (most recent call last):
+    ValueError: '=orphan' has no setting name
+    '''
+    options = {}
+    for token in tokens:
+        key, separator, value = token.partition('=')
+        key = normalize(key)
+        if not key:
+            raise ValueError(f"'{token}' has no setting name")
+        assign(options, key, value if separator else 'true')
+    return options
+
+
+def collect_input_files(options):
+    '''Split local input files out of a settings dict.
+
+    Returns (options, files), where options has each local input file's value replaced by its bare name and files
+    is a list of (name, contents) pairs to push during the handshake. A value that is not a file on this machine
+    (a path on the replay device, or the --dump-resources 'submit,command,drawcall' form) passes through
+    untouched.
+    '''
+    options = dict(options)
     files = []
     seen = {}
-    for index, token in enumerate(args[:-1]):
-        if token not in INPUT_FILE_OPTIONS:
-            continue
-        value = args[index + 1]
-        if not os.path.isfile(value):
+    for key in INPUT_FILE_OPTIONS:
+        value = options.get(key)
+        if value is None or not os.path.isfile(value):
             continue
         name = os.path.basename(value)
         if name in seen and seen[name] != value:
@@ -112,8 +180,8 @@ def collect_input_files(replay_args):
         seen[name] = value
         with open(value, 'rb') as source:
             files.append((name, source.read()))
-        args[index + 1] = name
-    return args, files
+        options[key] = name
+    return options, files
 
 
 def recv_exact(conn, length):
@@ -172,8 +240,10 @@ def start_command_reader():
     return commands
 
 
-def handle_session(conn, replay_args, output_dir, hello=None, input_files=()):
+def handle_session(conn, options, output_dir, hello=None, input_files=()):
     '''Run the handshake and process messages until replay reports done.
+
+    options is the settings dict sent to replay.
 
     hello is replay's already-received greeting frame when the caller read it during connection setup
     (connect mode); when None (listen mode) it is read here.
@@ -198,8 +268,10 @@ def handle_session(conn, replay_args, output_dir, hello=None, input_files=()):
         send_frame(conn, blob)
         print(f'Sent input file: {name} ({len(blob)} bytes)')
 
-    send_json(conn, {'type': 'settings', 'args': replay_args})
-    print(f'Sent settings: {replay_args}')
+    send_json(conn, {'type': 'settings', 'options': options})
+    print('Sent settings:')
+    for key in sorted(options):
+        print(f'  {key}={options[key]}')
 
     ready = recv_frame(conn)
     if ready is None or json.loads(ready).get('type') != 'ready':
@@ -333,9 +405,17 @@ def main():
     parser = argparse.ArgumentParser(
         description='Control gfxrecon-replay over its remote socket.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=
-        'Everything after -- is forwarded to replay as its settings args string.'
-    )
+        epilog='''\
+Everything after -- becomes replay's settings, which travel over the socket as
+key/value pairs rather than as a command line. Write each one as key=value, or
+as a bare key for an option that takes no value:
+
+    -- paused --loop-count=3 --dump-resources=dr.json capture_file=cap.gfxr
+
+Leading dashes are optional, so options keep their familiar spelling. What
+differs from a replay command line is the '=' joining an option to its value,
+and the capture file being named by its key rather than positional. Replay
+rejects any key it does not recognize, naming it in the error.''')
     parser.add_argument(
         '--listen',
         metavar='HOST:PORT',
@@ -357,11 +437,18 @@ def main():
         help=
         'Directory for files streamed back by replay (default: remote_output).'
     )
+    parser.add_argument('--self-test',
+                        action='store_true',
+                        help='Run this script\'s doctests and exit.')
     parser.add_argument(
         'replay_args',
         nargs=argparse.REMAINDER,
-        help='Replay settings args, e.g. -- --loop-count 3 capture.gfxr')
+        help='Replay settings, e.g. -- --loop-count 3 capture.gfxr')
     args = parser.parse_args()
+
+    if args.self_test:
+        import doctest
+        return 1 if doctest.testmod(verbose=False).failed else 0
 
     # Strip a leading '--' separator if argparse left it in the remainder.
     replay_args = args.replay_args
@@ -371,9 +458,14 @@ def main():
         parser.error(
             'No replay args given. Pass them after --, e.g. -- capture.gfxr')
 
-    # Every path in replay_args resolves on the replay device, so any input file that lives here must be pushed
+    try:
+        options = settings_from_args(replay_args)
+    except ValueError as e:
+        parser.error(str(e))
+
+    # Every path in the settings resolves on the replay device, so any input file that lives here must be pushed
     # over the socket and its option value rewritten to the name replay will know it by.
-    replay_args, input_files = collect_input_files(replay_args)
+    options, input_files = collect_input_files(options)
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -445,8 +537,8 @@ def main():
 
         print(f'Connected to replay at {host}:{port}')
         with conn:
-            success = handle_session(conn, ' '.join(replay_args),
-                                     args.output_dir, hello, input_files)
+            success = handle_session(conn, options, args.output_dir, hello,
+                                     input_files)
 
         return 0 if success else 1
 
@@ -505,7 +597,7 @@ def main():
     print(f'Replay connected from {peer[0]}:{peer[1]}')
     with conn:
         success = handle_session(conn,
-                                 ' '.join(replay_args),
+                                 options,
                                  args.output_dir,
                                  input_files=input_files)
 

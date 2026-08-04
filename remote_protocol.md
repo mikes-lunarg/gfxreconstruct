@@ -65,14 +65,17 @@ Every frame is a length-prefixed byte string:
 replay     → controller:  {"type":"hello","version":"1"}
 controller → replay:      {"type":"file","name":"dr.json","size":812}   (0..N, optional)
                           <812 raw bytes — separate binary frame, no encoding>
-controller → replay:      {"type":"settings","args":"--dump-resources dr.json /sdcard/capture.gfxr"}
+controller → replay:      {"type":"settings","options":{
+                            "dump_resources":"dr.json",
+                            "capture_file":"/sdcard/capture.gfxr"}}
 replay     → controller:  {"type":"ready"}
 [replay runs]
 ```
 
 - Replay sends `hello` first regardless of which side dialed.
-- `args` is a complete CLI-style argument string, from which replay rebuilds its
-  `ArgumentParser`. This list completely replaces the traditional command-line arguments
+- `options` is a set of replay settings, from which replay rebuilds its
+  `ArgumentParser`. It completely replaces the traditional command-line
+  arguments. See [Settings Keys](#settings-keys).
 - `settings` ends the controller's opening turn, so any `file` messages must
   precede it. Replay reads frames until `settings` arrives, which is why the
   protocol needs neither a file count nor a terminator: a controller that pushes
@@ -87,7 +90,7 @@ replay     → controller:  {"type":"ready"}
 ```json
 {"type":"file","name":"dr.json","size":812}   // handshake only, before "settings"
 <812 raw bytes — separate binary frame, no encoding>
-{"type":"settings","args":"<full cli args string>"}
+{"type":"settings","options":{"<key>":"<value>", ...}}
 {"type":"trigger","action":"pause"}   // "pause" | "resume" | "step" | "stop"
 ```
 
@@ -103,6 +106,38 @@ replay     → controller:  {"type":"ready"}
 ```
 
 `done` is the final message; replay disconnects after sending it.
+
+## Settings Keys
+
+The `settings` message carries option name/value pairs rather than a command
+line, so a value containing spaces needs no escaping.
+
+**Keys derive from replay's option spellings**: strip the leading dashes and
+replace `-` with `_`. There is no mapping table to maintain.
+
+| Command line | Key |
+|---|---|
+| `--loop-count` | `loop_count` |
+| `--mfr`, `--measurement-frame-range` | `mfr`, `measurement_frame_range` |
+
+Any alias works; the long form is canonical. Derived spellings are not accepted
+on the command line — `--log_level` is still an error there.
+
+**The capture file** has no spelling to derive, so it takes the key
+`capture_file`. Replay accepts exactly one.
+
+**Values are always strings**, never coerced; a non-string JSON value fails the
+handshake. `--cpu-mask 0011` sent as a number would arrive as a different mask.
+
+**Options taking no command-line value** use `"true"` / `"false"`. Accepted
+spellings are those `util::ParseBoolString` recognizes — `true` / `false` in any
+case, or an integer string. Anything else is an error naming the key.
+
+An unknown key is also an error naming the key, reported as received rather than
+re-normalized, and fails the handshake instead of printing usage text.
+
+The same payload shape will carry capture-side settings, whose native model is
+already a `<string, string>` map. The key sets are disjoint; the shape is not.
 
 ## Progress Messages
 
@@ -126,18 +161,18 @@ waits up to 10 ms on the trigger queue rather than blocking on window events.
 
 ## Input Files
 
-Every path in the `settings` args string resolves on the **replay device's**
+Every path in the `settings` options resolves on the **replay device's**
 filesystem, so a file the run needs as input is unreachable when it only exists
 on the controller's machine. The controller can instead push it during the
 handshake and name it by the value of the matching option.
 
 Covered options — the value is a name the controller supplied, not a device path:
 
-| Option | Contents |
+| Setting | Contents |
 |---|---|
-| `--dump-resources` | dump-resources JSON |
-| `--frame-warm-up-spirv` | SPIR-V module |
-| `--load-pipeline-cache` | pipeline cache blob |
+| `dump_resources` | dump-resources JSON |
+| `frame_warm_up_spirv` | SPIR-V module |
+| `load_pipeline_cache` | pipeline cache blob |
 
 Rules:
 
@@ -148,7 +183,7 @@ Rules:
   controller that framed the transfer wrongly instead of letting it surface much
   later as a corrupt input file.
 - `name` is a lookup key, not a path: it must be a bare filename, and it is
-  matched literally against the option's value in the args string. Keep the
+  matched literally against the option's value in the settings. Keep the
   extension — `--dump-resources` selects its parser by the `.json` suffix.
 - A supplied file takes precedence over a same-named file on the target. An
   option value that was not supplied is left alone, so a file already staged on
@@ -200,14 +235,19 @@ controller implementation:
   refused connection for up to 30 s to cover launch races).
 - `--adb` — set up the appropriate adb mapping and launch the replay activity on
   a connected Android device.
-- All other replay arguments after `--` are forwarded to the remote replay application
+- Replay settings are given after `--` as `key=value`, or as a bare key for an
+  option that takes no value. Leading dashes are optional, so options keep their
+  familiar spelling. Deliberately *not* a replay command line: which options take
+  a value is not knowable from the tokens alone, so requiring `=` removes the
+  guesswork rather than inferring it.
 - Pushes local input files: when the value of an [input file option](#input-files)
   names a file on the controller's machine, it is sent during the handshake and
   the option value is rewritten to the bare filename.
 - Reads `p` / `r` / `s` / `q` from stdin to send pause/resume/step/stop triggers.
+- `--self-test` runs the script's doctests.
 
 ```
-python scripts/replay_controller.py --connect localhost:9000 --adb -- /sdcard/capture.gfxr --dump-resources dr.json
+python scripts/replay_controller.py --connect localhost:9000 --adb -- --dump-resources=dr.json capture_file=/sdcard/capture.gfxr
 ```
 
 Only the capture file has to exist on the device; `dr.json` is read from the

@@ -51,12 +51,16 @@ const char kArguments[] =
     "replay-event-plugin-path,--replay-event-plugin-params,--remote-connect,--remote-listen";
 
 // Replay options whose value names a file that replay reads. A remote controller pushes these during the handshake.
-// Keep in sync with INPUT_FILE_OPTIONS in scripts/replay_controller.py.
+// Keep in sync with INPUT_FILE_OPTIONS in scripts/replay_controller.py, which holds the normalized settings-map
+// spellings of these same options.
 const char* const kRemoteInputFileArguments[] = {
     "--dump-resources",
     "--frame-warm-up-spirv",
     "--load-pipeline-cache",
 };
+
+// The settings-map key carrying the capture file, which is positional and so has no spelling to normalize.
+const char kRemoteCaptureFileKey[] = "capture_file";
 
 static void PrintUsage(const char* exe_name)
 {

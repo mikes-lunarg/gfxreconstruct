@@ -36,6 +36,7 @@
 #endif
 
 #include <limits>
+#include <map>
 #include <memory>
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
@@ -64,14 +65,33 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
         return RemoteSetupResult::kFailed;
     }
 
-    std::string remote_args = channel.Handshake();
-    if (remote_args.empty())
+    std::map<std::string, std::string> settings;
+    if (!channel.Handshake(settings))
     {
         return RemoteSetupResult::kFailed;
     }
 
+    // Registered before the settings are parsed, so complaints about them reach the controller that sent them rather
+    // than only the target's local log.
+    util::RemoteChannel::SetActiveChannel(&channel);
+
     // Replace the local arguments with the settings provided by the controller.
-    arg_parser = util::ArgumentParser(false, remote_args.c_str(), kOptions, kArguments);
+    arg_parser = util::ArgumentParser(settings, kOptions, kArguments, kRemoteCaptureFileKey);
+
+    // Fail here rather than letting the caller's generic check print usage text, which would blame the user for a
+    // mistake the controller made. The parser has already logged what is wrong with each setting.
+    if (arg_parser.IsInvalid())
+    {
+        for (const std::string& setting : arg_parser.GetInvalidArgumentOrOptions())
+        {
+            GFXRECON_LOG_ERROR("Remote channel: controller sent invalid setting \'%s\'", setting.c_str());
+        }
+
+        // Flushed here because a caller may exit() without unwinding, dropping the messages above unsent. Repeating
+        // this in the caller's own shutdown is harmless.
+        ShutdownRemoteChannel(channel, false);
+        return RemoteSetupResult::kFailed;
+    }
 
     // Point options at the copies the controller pushed. A value it did not push is left alone, which is the escape
     // hatch for a file already staged on the device.
@@ -86,9 +106,6 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
             }
         }
     }
-
-    // Register the channel so log output and file writes (screenshots, dump-resources) stream to the controller.
-    util::RemoteChannel::SetActiveChannel(&channel);
 
     return RemoteSetupResult::kConnected;
 }
