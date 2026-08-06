@@ -26,8 +26,12 @@
 #include "decode/vulkan_object_info.h"
 #include "format/format.h"
 #include "util/json_util.h"
+#include "util/memory_output_stream.h"
+#include "util/output_stream.h"
 #include "decode/vulkan_replay_options.h"
 #include "decode/vulkan_replay_dump_resources_delegate_dumped_resources.h"
+
+#include <memory>
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(decode)
@@ -91,10 +95,10 @@ class VulkanReplayDumpResourcesJson
   private:
     bool InitializeFile(const std::string& filename);
 
-    FILE*                   file_;
+    std::unique_ptr<util::OutputStream> stream_;
+    util::MemoryOutputStream*           memory_stream_{ nullptr }; // Aliases stream_ when streaming to a controller.
+
     std::string             filename_; // kept for SendActiveFile on Close()
-    char*                   mem_buf_{ nullptr };
-    size_t                  mem_size_{ 0 };
     nlohmann::ordered_json  header_;
     nlohmann::ordered_json  json_data_;
     nlohmann::ordered_json* current_entry;

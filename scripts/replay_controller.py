@@ -553,7 +553,12 @@ rejects any key it does not recognize, naming it in the error.''')
                        check=False)
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if sys.platform == 'win32':
+        # Not SO_REUSEADDR: on Windows that lets an unrelated process take over a port we have bound.
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        # Rebind a port left in TIME_WAIT by a previous run.
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((host, port))
     server.listen(1)
     print(f'Listening on {host}:{port}')
