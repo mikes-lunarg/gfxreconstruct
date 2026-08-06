@@ -425,7 +425,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL AppleClang)
     # over -isystem paths. Add external/Vulkan-Headers as a normal -I path for the correct
     # search order, then use --system-header-prefix to treat it as a system header for warnings
     target_include_directories(vulkan_registry INTERFACE ${PROJECT_SOURCE_DIR}/external/Vulkan-Headers/include)
-    target_compile_options(vulkan_registry INTERFACE --system-header-prefix vulkan/)
+    target_compile_options(vulkan_registry INTERFACE --system-header-prefix=vulkan/)
 else ()
     target_include_directories(vulkan_registry SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/external/Vulkan-Headers/include)
 endif()
