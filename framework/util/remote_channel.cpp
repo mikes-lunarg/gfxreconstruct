@@ -20,14 +20,15 @@
 ** DEALINGS IN THE SOFTWARE.
 */
 
-#include "util/remote_channel.h"
-
-#include "util/input_file_store.h"
-#include "util/logging.h"
-
-#include <cinttypes>
-
-#if !defined(_WIN32)
+// winsock2.h must come before any windows.h; WSAPoll() requires a Vista or later SDK target.
+#if defined(_WIN32)
+#if !defined(_WIN32_WINNT) || (_WIN32_WINNT < 0x0600)
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -36,29 +37,216 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
+#endif
 
+#include "util/remote_channel.h"
+
+#include "util/input_file_store.h"
+#include "util/logging.h"
+
+#include <algorithm>
 #include <cerrno>
+#include <cinttypes>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 
-// macOS does not define MSG_NOSIGNAL; it uses the SO_NOSIGPIPE socket option instead (set in SetNoSigPipe below).
+// Undefined on Windows, which has no SIGPIPE, and on macOS, which uses SO_NOSIGPIPE instead (see SetNoSigPipe below).
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
-#endif
 #endif
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(util)
-
-#if !defined(_WIN32)
 
 namespace
 {
 // Seconds to wait for a controller to connect in Listen() mode before giving up.
 constexpr int kAcceptTimeoutSeconds = 30;
 
+constexpr int kHandshakeTimeoutSeconds = 5;
+
+// The rest of this block adapts Winsock and BSD sockets to the one interface used by the logic below.
+#if defined(_WIN32)
+
+// Winsock must be initialized before any socket call; the function-local static also tears it down at exit.
+bool EnsureSocketLibrary()
+{
+    struct WinsockScope
+    {
+        WinsockScope()
+        {
+            WSADATA data = {};
+            status       = WSAStartup(MAKEWORD(2, 2), &data);
+        }
+
+        ~WinsockScope()
+        {
+            if (status == 0)
+            {
+                WSACleanup();
+            }
+        }
+
+        int status;
+    };
+
+    static const WinsockScope scope;
+    if (scope.status != 0)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: WSAStartup failed with error %d", scope.status);
+        return false;
+    }
+    return true;
+}
+
+// Winsock errors never reach errno, so strerror() would report something unrelated.
+std::string SocketErrorString()
+{
+    const DWORD error   = static_cast<DWORD>(WSAGetLastError());
+    char*       message = nullptr;
+    const DWORD length =
+        FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                       nullptr,
+                       error,
+                       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                       reinterpret_cast<char*>(&message),
+                       0,
+                       nullptr);
+
+    std::string result;
+    if ((message != nullptr) && (length != 0))
+    {
+        result.assign(message, length);
+
+        // System messages end in a newline, which would split the log line.
+        while (!result.empty() && ((result.back() == '\r') || (result.back() == '\n') || (result.back() == ' ')))
+        {
+            result.pop_back();
+        }
+    }
+    if (message != nullptr)
+    {
+        LocalFree(message);
+    }
+
+    if (result.empty())
+    {
+        result = "unknown socket error";
+    }
+    return result + " (" + std::to_string(error) + ")";
+}
+
+bool SocketErrorIsInterrupt()
+{
+    return WSAGetLastError() == WSAEINTR;
+}
+
+void CloseSocket(SocketHandle& fd)
+{
+    closesocket(fd);
+    fd = kInvalidSocket;
+}
+
+// Winsock's shutdown() leaves an in-progress recv() parked; only closesocket() cancels it.
+void WakeReceiver(SocketHandle& fd)
+{
+    CloseSocket(fd);
+}
+
+// A timeout_seconds of 0 restores indefinite blocking. Windows takes SO_RCVTIMEO in milliseconds, POSIX as a timeval.
+void SetRecvTimeout(SocketHandle fd, int timeout_seconds)
+{
+    DWORD timeout = static_cast<DWORD>(timeout_seconds) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+}
+
+// Returns >0 when fd becomes readable within timeout_seconds, 0 on timeout, <0 on error.
+int WaitForReadable(SocketHandle fd, int timeout_seconds)
+{
+    WSAPOLLFD pfd = {};
+    pfd.fd        = fd;
+    pfd.events    = static_cast<SHORT>(POLLRDNORM);
+    return WSAPoll(&pfd, 1, timeout_seconds * 1000);
+}
+
+// Windows has no SIGPIPE; a send to a closed peer simply fails.
+void SetNoSigPipe(SocketHandle fd)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(fd);
+}
+
+// Not SO_REUSEADDR: on Windows that lets an unrelated process take over a port this socket has bound, and unlike BSD
+// it is not needed to rebind a port left in TIME_WAIT.
+void SetListenSocketOptions(SocketHandle fd)
+{
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&on), sizeof(on));
+}
+
+// Windows has no abstract namespace, and the controller has no AF_UNIX there either, so Windows targets speak TCP.
+SocketHandle ConnectUnix(const std::string& name)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(name);
+    GFXRECON_LOG_ERROR("Remote channel: Unix domain sockets are not supported on Windows; use a tcp: address");
+    return kInvalidSocket;
+}
+
+SocketHandle ListenUnix(const std::string& name)
+{
+    GFXRECON_UNREFERENCED_PARAMETER(name);
+    GFXRECON_LOG_ERROR("Remote channel: Unix domain sockets are not supported on Windows; use a tcp: address");
+    return kInvalidSocket;
+}
+
+#else // POSIX
+
+bool EnsureSocketLibrary()
+{
+    return true;
+}
+
+std::string SocketErrorString()
+{
+    return strerror(errno);
+}
+
+bool SocketErrorIsInterrupt()
+{
+    return errno == EINTR;
+}
+
+void CloseSocket(SocketHandle& fd)
+{
+    close(fd);
+    fd = kInvalidSocket;
+}
+
+// shutdown() unblocks a parked recv() without closing, so fd stays valid for the caller.
+void WakeReceiver(SocketHandle& fd)
+{
+    shutdown(fd, SHUT_RDWR);
+}
+
+// A timeout_seconds of 0 restores indefinite blocking.
+void SetRecvTimeout(SocketHandle fd, int timeout_seconds)
+{
+    timeval timeout = {};
+    timeout.tv_sec  = timeout_seconds;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+}
+
+// Returns >0 when fd becomes readable within timeout_seconds, 0 on timeout, <0 on error.
+int WaitForReadable(SocketHandle fd, int timeout_seconds)
+{
+    pollfd pfd = {};
+    pfd.fd     = fd;
+    pfd.events = POLLIN;
+    return poll(&pfd, 1, timeout_seconds * 1000);
+}
+
 // Suppress SIGPIPE on platforms that signal it instead of honoring MSG_NOSIGNAL (e.g. macOS).
-void SetNoSigPipe(int fd)
+void SetNoSigPipe(SocketHandle fd)
 {
 #ifdef SO_NOSIGPIPE
     int on = 1;
@@ -68,77 +256,11 @@ void SetNoSigPipe(int fd)
 #endif
 }
 
-// Convert a LoggingSeverity to the lowercase level string used in the wire protocol.
-const char* SeverityToLevelString(LoggingSeverity severity)
+// Let a listening socket rebind a port left in TIME_WAIT by a previous run.
+void SetListenSocketOptions(SocketHandle fd)
 {
-    switch (severity)
-    {
-        case LoggingSeverity::kVerbose:
-            return "verbose";
-        case LoggingSeverity::kDebug:
-            return "debug";
-        case LoggingSeverity::kInfo:
-            return "info";
-        case LoggingSeverity::kWarning:
-            return "warning";
-        case LoggingSeverity::kError:
-            return "error";
-        case LoggingSeverity::kFatal:
-            return "fatal";
-        default:
-            return "info";
-    }
-}
-
-// Connect a TCP socket described by "host:port". Returns a connected fd, or -1 on failure.
-int ConnectTcp(const std::string& host_port)
-{
-    size_t colon = host_port.find_last_of(':');
-    if (colon == std::string::npos)
-    {
-        GFXRECON_LOG_ERROR("Remote channel: invalid TCP address '%s' (expected host:port)", host_port.c_str());
-        return -1;
-    }
-
-    std::string host = host_port.substr(0, colon);
-    std::string port = host_port.substr(colon + 1);
-
-    addrinfo hints    = {};
-    hints.ai_family   = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    addrinfo* results = nullptr;
-    int       err     = getaddrinfo(host.c_str(), port.c_str(), &hints, &results);
-    if (err != 0)
-    {
-        GFXRECON_LOG_ERROR("Remote channel: failed to resolve '%s': %s", host_port.c_str(), gai_strerror(err));
-        return -1;
-    }
-
-    int fd = -1;
-    for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next)
-    {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd == -1)
-        {
-            continue;
-        }
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0)
-        {
-            SetNoSigPipe(fd);
-            break;
-        }
-        close(fd);
-        fd = -1;
-    }
-
-    freeaddrinfo(results);
-
-    if (fd == -1)
-    {
-        GFXRECON_LOG_ERROR("Remote channel: failed to connect to '%s'", host_port.c_str());
-    }
-    return fd;
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 }
 
 // Populate addr/addrlen for a Unix domain socket name. A leading '@' selects the abstract namespace. Returns false if
@@ -174,44 +296,189 @@ bool BuildUnixAddr(const std::string& name, sockaddr_un& addr, socklen_t& addrle
     return true;
 }
 
-// Connect a Unix domain socket. A leading '@' in name selects the abstract namespace. Returns a connected fd, or -1 on
-// failure.
-int ConnectUnix(const std::string& name)
+// Connect a Unix domain socket. A leading '@' in name selects the abstract namespace. Returns a connected fd, or
+// kInvalidSocket on failure.
+SocketHandle ConnectUnix(const std::string& name)
 {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd == -1)
+    SocketHandle fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd == kInvalidSocket)
     {
-        GFXRECON_LOG_ERROR("Remote channel: failed to create Unix socket: %s", strerror(errno));
-        return -1;
+        GFXRECON_LOG_ERROR("Remote channel: failed to create Unix socket: %s", SocketErrorString().c_str());
+        return kInvalidSocket;
     }
 
     sockaddr_un addr    = {};
     socklen_t   addrlen = 0;
     if (!BuildUnixAddr(name, addr, addrlen))
     {
-        close(fd);
-        return -1;
+        CloseSocket(fd);
+        return kInvalidSocket;
     }
 
     if (connect(fd, reinterpret_cast<sockaddr*>(&addr), addrlen) != 0)
     {
-        GFXRECON_LOG_ERROR("Remote channel: failed to connect to Unix socket '%s': %s", name.c_str(), strerror(errno));
-        close(fd);
-        return -1;
+        GFXRECON_LOG_ERROR(
+            "Remote channel: failed to connect to Unix socket '%s': %s", name.c_str(), SocketErrorString().c_str());
+        CloseSocket(fd);
+        return kInvalidSocket;
     }
 
     SetNoSigPipe(fd);
     return fd;
 }
 
-// Bind and listen a TCP socket described by "host:port". Returns a listening fd, or -1 on failure.
-int ListenTcp(const std::string& host_port)
+// Bind and listen a Unix domain socket. A leading '@' in name selects the abstract namespace. Returns a listening fd,
+// or kInvalidSocket on failure.
+SocketHandle ListenUnix(const std::string& name)
+{
+    SocketHandle fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd == kInvalidSocket)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to create Unix socket: %s", SocketErrorString().c_str());
+        return kInvalidSocket;
+    }
+
+    sockaddr_un addr    = {};
+    socklen_t   addrlen = 0;
+    if (!BuildUnixAddr(name, addr, addrlen))
+    {
+        CloseSocket(fd);
+        return kInvalidSocket;
+    }
+
+    // Filesystem-backed sockets fail to bind if a stale node remains; abstract names (leading '@') need no unlink.
+    if (name.empty() || name[0] != '@')
+    {
+        unlink(name.c_str());
+    }
+
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), addrlen) != 0 || listen(fd, 1) != 0)
+    {
+        GFXRECON_LOG_ERROR(
+            "Remote channel: failed to listen on Unix socket '%s': %s", name.c_str(), SocketErrorString().c_str());
+        CloseSocket(fd);
+        return kInvalidSocket;
+    }
+
+    return fd;
+}
+
+#endif // defined(_WIN32)
+
+// send() and recv() take a char buffer and an int length on Windows, a void buffer and a size_t on POSIX. The clamp
+// lets an oversized buffer take several passes, which the calling loops already handle, rather than overflow the int.
+int64_t SocketSend(SocketHandle fd, const void* buf, size_t size)
+{
+#if defined(_WIN32)
+    const int length = static_cast<int>(std::min<size_t>(size, std::numeric_limits<int>::max()));
+    return send(fd, static_cast<const char*>(buf), length, MSG_NOSIGNAL);
+#else
+    return send(fd, buf, size, MSG_NOSIGNAL);
+#endif
+}
+
+int64_t SocketRecv(SocketHandle fd, void* buf, size_t size)
+{
+#if defined(_WIN32)
+    const int length = static_cast<int>(std::min<size_t>(size, std::numeric_limits<int>::max()));
+    return recv(fd, static_cast<char*>(buf), length, 0);
+#else
+    return recv(fd, buf, size, 0);
+#endif
+}
+
+// Windows mirrors getaddrinfo() failures into the socket error, and its gai_strerror() is not thread-safe.
+std::string AddrInfoErrorString(int error)
+{
+#if defined(_WIN32)
+    GFXRECON_UNREFERENCED_PARAMETER(error);
+    return SocketErrorString();
+#else
+    return gai_strerror(error);
+#endif
+}
+
+// Convert a LoggingSeverity to the lowercase level string used in the wire protocol.
+const char* SeverityToLevelString(LoggingSeverity severity)
+{
+    switch (severity)
+    {
+        case LoggingSeverity::kVerbose:
+            return "verbose";
+        case LoggingSeverity::kDebug:
+            return "debug";
+        case LoggingSeverity::kInfo:
+            return "info";
+        case LoggingSeverity::kWarning:
+            return "warning";
+        case LoggingSeverity::kError:
+            return "error";
+        case LoggingSeverity::kFatal:
+            return "fatal";
+        default:
+            return "info";
+    }
+}
+
+// Connect a TCP socket described by "host:port". Returns a connected fd, or kInvalidSocket on failure.
+SocketHandle ConnectTcp(const std::string& host_port)
 {
     size_t colon = host_port.find_last_of(':');
     if (colon == std::string::npos)
     {
         GFXRECON_LOG_ERROR("Remote channel: invalid TCP address '%s' (expected host:port)", host_port.c_str());
-        return -1;
+        return kInvalidSocket;
+    }
+
+    std::string host = host_port.substr(0, colon);
+    std::string port = host_port.substr(colon + 1);
+
+    addrinfo hints    = {};
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    addrinfo* results = nullptr;
+    int       err     = getaddrinfo(host.c_str(), port.c_str(), &hints, &results);
+    if (err != 0)
+    {
+        GFXRECON_LOG_ERROR(
+            "Remote channel: failed to resolve '%s': %s", host_port.c_str(), AddrInfoErrorString(err).c_str());
+        return kInvalidSocket;
+    }
+
+    SocketHandle fd = kInvalidSocket;
+    for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next)
+    {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == kInvalidSocket)
+        {
+            continue;
+        }
+        if (connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0)
+        {
+            SetNoSigPipe(fd);
+            break;
+        }
+        CloseSocket(fd);
+    }
+
+    freeaddrinfo(results);
+
+    if (fd == kInvalidSocket)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to connect to '%s'", host_port.c_str());
+    }
+    return fd;
+}
+
+// Bind and listen a TCP socket described by "host:port". Returns a listening fd, or kInvalidSocket on failure.
+SocketHandle ListenTcp(const std::string& host_port)
+{
+    size_t colon = host_port.find_last_of(':');
+    if (colon == std::string::npos)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: invalid TCP address '%s' (expected host:port)", host_port.c_str());
+        return kInvalidSocket;
     }
 
     std::string host = host_port.substr(0, colon);
@@ -226,99 +493,65 @@ int ListenTcp(const std::string& host_port)
     int       err     = getaddrinfo(host.empty() ? nullptr : host.c_str(), port.c_str(), &hints, &results);
     if (err != 0)
     {
-        GFXRECON_LOG_ERROR("Remote channel: failed to resolve '%s': %s", host_port.c_str(), gai_strerror(err));
-        return -1;
+        GFXRECON_LOG_ERROR(
+            "Remote channel: failed to resolve '%s': %s", host_port.c_str(), AddrInfoErrorString(err).c_str());
+        return kInvalidSocket;
     }
 
-    int fd = -1;
+    SocketHandle fd = kInvalidSocket;
     for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next)
     {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd == -1)
+        if (fd == kInvalidSocket)
         {
             continue;
         }
-        int on = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-        if (bind(fd, ai->ai_addr, ai->ai_addrlen) == 0 && listen(fd, 1) == 0)
+        SetListenSocketOptions(fd);
+        if (ai->ai_family == AF_INET6)
+        {
+            // Windows defaults IPV6_V6ONLY on, which would leave a wildcard bind refusing IPv4 controllers.
+            int off = 0;
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&off), sizeof(off));
+        }
+        if (bind(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0 && listen(fd, 1) == 0)
         {
             break;
         }
-        close(fd);
-        fd = -1;
+        CloseSocket(fd);
     }
 
     freeaddrinfo(results);
 
-    if (fd == -1)
+    if (fd == kInvalidSocket)
     {
         GFXRECON_LOG_ERROR("Remote channel: failed to listen on '%s'", host_port.c_str());
     }
     return fd;
 }
 
-// Bind and listen a Unix domain socket. A leading '@' in name selects the abstract namespace. Returns a listening fd,
-// or -1 on failure.
-int ListenUnix(const std::string& name)
+// Wait up to timeout_seconds for a connection on listen_fd, then accept it. Returns the accepted fd, or kInvalidSocket
+// on timeout or error.
+SocketHandle AcceptWithTimeout(SocketHandle listen_fd, int timeout_seconds)
 {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd == -1)
-    {
-        GFXRECON_LOG_ERROR("Remote channel: failed to create Unix socket: %s", strerror(errno));
-        return -1;
-    }
-
-    sockaddr_un addr    = {};
-    socklen_t   addrlen = 0;
-    if (!BuildUnixAddr(name, addr, addrlen))
-    {
-        close(fd);
-        return -1;
-    }
-
-    // Filesystem-backed sockets fail to bind if a stale node remains; abstract names (leading '@') need no unlink.
-    if (name.empty() || name[0] != '@')
-    {
-        unlink(name.c_str());
-    }
-
-    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), addrlen) != 0 || listen(fd, 1) != 0)
-    {
-        GFXRECON_LOG_ERROR("Remote channel: failed to listen on Unix socket '%s': %s", name.c_str(), strerror(errno));
-        close(fd);
-        return -1;
-    }
-
-    return fd;
-}
-
-// Wait up to timeout_seconds for a connection on listen_fd, then accept it. Returns the accepted fd, or -1 on timeout
-// or error.
-int AcceptWithTimeout(int listen_fd, int timeout_seconds)
-{
-    pollfd pfd = {};
-    pfd.fd     = listen_fd;
-    pfd.events = POLLIN;
-
-    int ready = poll(&pfd, 1, timeout_seconds * 1000);
+    const int ready = WaitForReadable(listen_fd, timeout_seconds);
     if (ready == 0)
     {
         GFXRECON_LOG_ERROR("Remote channel: timed out after %d seconds waiting for a controller connection",
                            timeout_seconds);
-        return -1;
+        return kInvalidSocket;
     }
     if (ready < 0)
     {
         GFXRECON_LOG_ERROR("Remote channel: poll failed while waiting for a controller connection: %s",
-                           strerror(errno));
-        return -1;
+                           SocketErrorString().c_str());
+        return kInvalidSocket;
     }
 
-    int fd = accept(listen_fd, nullptr, nullptr);
-    if (fd == -1)
+    SocketHandle fd = accept(listen_fd, nullptr, nullptr);
+    if (fd == kInvalidSocket)
     {
-        GFXRECON_LOG_ERROR("Remote channel: failed to accept controller connection: %s", strerror(errno));
-        return -1;
+        GFXRECON_LOG_ERROR("Remote channel: failed to accept controller connection: %s", SocketErrorString().c_str());
+        return kInvalidSocket;
     }
 
     SetNoSigPipe(fd);
@@ -329,6 +562,11 @@ int AcceptWithTimeout(int listen_fd, int timeout_seconds)
 bool RemoteChannel::Connect(const std::string& address)
 {
     Disconnect();
+
+    if (!EnsureSocketLibrary())
+    {
+        return false;
+    }
 
     constexpr const char kTcpPrefix[]  = "tcp:";
     constexpr const char kUnixPrefix[] = "unix:";
@@ -348,7 +586,7 @@ bool RemoteChannel::Connect(const std::string& address)
         return false;
     }
 
-    if (fd_ == -1)
+    if (fd_ == kInvalidSocket)
     {
         return false;
     }
@@ -360,6 +598,11 @@ bool RemoteChannel::Connect(const std::string& address)
 bool RemoteChannel::Listen(const std::string& address)
 {
     Disconnect();
+
+    if (!EnsureSocketLibrary())
+    {
+        return false;
+    }
 
     constexpr const char kTcpPrefix[]  = "tcp:";
     constexpr const char kUnixPrefix[] = "unix:";
@@ -379,7 +622,7 @@ bool RemoteChannel::Listen(const std::string& address)
         return false;
     }
 
-    if (listen_fd_ == -1)
+    if (listen_fd_ == kInvalidSocket)
     {
         return false;
     }
@@ -387,10 +630,9 @@ bool RemoteChannel::Listen(const std::string& address)
     fd_ = AcceptWithTimeout(listen_fd_, kAcceptTimeoutSeconds);
 
     // The listening socket is no longer needed once a single controller has connected.
-    close(listen_fd_);
-    listen_fd_ = -1;
+    CloseSocket(listen_fd_);
 
-    if (fd_ == -1)
+    if (fd_ == kInvalidSocket)
     {
         return false;
     }
@@ -401,7 +643,7 @@ bool RemoteChannel::Listen(const std::string& address)
 
 bool RemoteChannel::IsConnected() const
 {
-    return (fd_ != -1) && !send_failed_;
+    return (fd_ != kInvalidSocket) && !send_failed_;
 }
 
 void RemoteChannel::Disconnect()
@@ -417,27 +659,25 @@ void RemoteChannel::Disconnect()
         sender_thread_.join();
     }
 
-    if (fd_ != -1)
+    if (fd_ != kInvalidSocket)
     {
-        // Wake the receiver thread out of a blocking recv before closing the descriptor.
-        shutdown(fd_, SHUT_RDWR);
+        // Wake the receiver thread out of a blocking recv; on Windows that closes the socket, clearing fd_.
+        WakeReceiver(fd_);
     }
     if (receiver_thread_.joinable())
     {
         receiver_thread_.join();
     }
 
-    if (fd_ != -1)
+    if (fd_ != kInvalidSocket)
     {
-        close(fd_);
-        fd_ = -1;
+        CloseSocket(fd_);
     }
 
     // Covers the Listen() paths that fail before a connection is accepted (bind/listen failure or accept timeout).
-    if (listen_fd_ != -1)
+    if (listen_fd_ != kInvalidSocket)
     {
-        close(listen_fd_);
-        listen_fd_ = -1;
+        CloseSocket(listen_fd_);
     }
 
     send_queue_.clear();
@@ -448,7 +688,7 @@ void RemoteChannel::Disconnect()
 
 bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
 {
-    if (fd_ == -1)
+    if (fd_ == kInvalidSocket)
     {
         return false;
     }
@@ -456,9 +696,8 @@ bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
     SendJson({ { "type", "hello" }, { "version", "1" } });
 
     // Bound the handshake receive so a missing/unresponsive controller does not hang startup.
-    timeval timeout = {};
-    timeout.tv_sec  = 5;
-    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    // A timed-out Winsock call leaves the socket indeterminate, so every failure below has to stay fatal.
+    SetRecvTimeout(fd_, kHandshakeTimeoutSeconds);
 
     // "settings" ends the controller's opening turn; any "file" messages precede it. Reading until it arrives means a
     // controller that pushes no files sends nothing extra, so no count or terminator is needed.
@@ -524,8 +763,7 @@ bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
     SendJson({ { "type", "ready" } });
 
     // Restore blocking receives for the receiver thread, which queues trigger messages from the controller.
-    timeout = {};
-    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    SetRecvTimeout(fd_, 0);
     receiver_thread_ = std::thread(&RemoteChannel::ReceiverThread, this);
 
     return true;
@@ -758,10 +996,10 @@ bool RemoteChannel::SendAll(const void* buf, size_t size)
     size_t         remaining = size;
     while (remaining > 0)
     {
-        ssize_t sent = send(fd_, ptr, remaining, MSG_NOSIGNAL);
+        int64_t sent = SocketSend(fd_, ptr, remaining);
         if (sent <= 0)
         {
-            if (sent < 0 && errno == EINTR)
+            if (sent < 0 && SocketErrorIsInterrupt())
             {
                 continue;
             }
@@ -779,10 +1017,10 @@ bool RemoteChannel::RecvExact(void* buf, size_t size)
     size_t   remaining = size;
     while (remaining > 0)
     {
-        ssize_t received = recv(fd_, ptr, remaining, 0);
+        int64_t received = SocketRecv(fd_, ptr, remaining);
         if (received <= 0)
         {
-            if (received < 0 && errno == EINTR)
+            if (received < 0 && SocketErrorIsInterrupt())
             {
                 continue;
             }
@@ -794,105 +1032,6 @@ bool RemoteChannel::RecvExact(void* buf, size_t size)
     return true;
 }
 
-#else // WIN32: socket transport is not supported; all methods are no-ops.
-
-bool RemoteChannel::Connect(const std::string& address)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(address);
-    return false;
-}
-
-bool RemoteChannel::Listen(const std::string& address)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(address);
-    return false;
-}
-
-bool RemoteChannel::IsConnected() const
-{
-    return false;
-}
-
-void RemoteChannel::Disconnect() {}
-
-bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(settings);
-    return false;
-}
-
-bool RemoteChannel::TryPopTrigger(std::string* action)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(action);
-    return false;
-}
-
-bool RemoteChannel::WaitPopTrigger(std::string* action, std::chrono::milliseconds timeout)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(action);
-    GFXRECON_UNREFERENCED_PARAMETER(timeout);
-    return false;
-}
-
-void RemoteChannel::SendJson(const nlohmann::json& msg)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(msg);
-}
-
-void RemoteChannel::SendFile(const std::string& name, const void* data, size_t size)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(name);
-    GFXRECON_UNREFERENCED_PARAMETER(data);
-    GFXRECON_UNREFERENCED_PARAMETER(size);
-}
-
-void RemoteChannel::SendLog(LoggingSeverity severity, const std::string& message)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(severity);
-    GFXRECON_UNREFERENCED_PARAMETER(message);
-}
-
-void RemoteChannel::SendProgress(uint64_t frame, uint64_t block)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(frame);
-    GFXRECON_UNREFERENCED_PARAMETER(block);
-}
-
-void RemoteChannel::SendDone(bool success)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(success);
-}
-
-bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(header);
-    return false;
-}
-
-bool RemoteChannel::RecvFrame(std::vector<uint8_t>& out)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(out);
-    return false;
-}
-
-bool RemoteChannel::SendAll(const void* buf, size_t size)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(buf);
-    GFXRECON_UNREFERENCED_PARAMETER(size);
-    return false;
-}
-
-bool RemoteChannel::RecvExact(void* buf, size_t size)
-{
-    GFXRECON_UNREFERENCED_PARAMETER(buf);
-    GFXRECON_UNREFERENCED_PARAMETER(size);
-    return false;
-}
-
-#endif // !defined(_WIN32)
-
-// The active-channel registry is platform-independent; IsActive() / SendActiveFile() are compiled everywhere.
-// SendFile() is a no-op on Windows stubs, so the channel-active path is reachable but harmless there.
 RemoteChannel* RemoteChannel::active_channel_ = nullptr;
 
 void RemoteChannel::SetActiveChannel(RemoteChannel* channel)

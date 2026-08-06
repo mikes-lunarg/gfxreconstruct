@@ -27,6 +27,7 @@
 #include "format/format_util.h"
 #include "generated/generated_vulkan_enum_to_string.h"
 #include PROJECT_VERSION_HEADER_FILE
+#include "util/file_output_stream.h"
 #include "util/file_path.h"
 #include "util/logging.h"
 #include "util/platform.h"
@@ -37,8 +38,11 @@
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(decode)
 
+// Without a buffer, each dumped block would reach the file system on its own.
+constexpr size_t kJsonFileBufferSize = 64 * 1024;
+
 VulkanReplayDumpResourcesJson::VulkanReplayDumpResourcesJson(const VulkanReplayOptions& options) :
-    file_(nullptr), current_entry(nullptr), first_block_(true), draw_calls_entry_index(0), dispatch_entry_index(0),
+    current_entry(nullptr), first_block_(true), draw_calls_entry_index(0), dispatch_entry_index(0),
     trace_rays_entry_index(0), transfer_entry_index(0)
 {
     header_["vulkanVersion"] = std::to_string(VK_VERSION_MAJOR(VK_HEADER_VERSION_COMPLETE)) + "." +
@@ -72,35 +76,28 @@ bool VulkanReplayDumpResourcesJson::InitializeFile(const std::string& filename)
 {
     filename_ = filename;
 
-#if !defined(_WIN32)
     if (util::RemoteChannel::IsActive())
     {
-        mem_buf_  = nullptr;
-        mem_size_ = 0;
-        file_     = open_memstream(&mem_buf_, &mem_size_);
-        if (file_ == nullptr)
-        {
-            GFXRECON_LOG_ERROR("Could not open memory stream for dump resources JSON '%s'", filename.c_str());
-            return false;
-        }
+        auto owned     = std::make_unique<util::MemoryOutputStream>();
+        memory_stream_ = owned.get();
+        stream_        = std::move(owned);
     }
     else
-#endif
     {
-        int ret = gfxrecon::util::platform::FileOpen(&file_, filename.c_str(), "w");
-        if (ret || file_ == nullptr)
+        memory_stream_ = nullptr;
+
+        stream_ =
+            std::make_unique<util::FileOutputStream>(filename, kJsonFileBufferSize, false, util::FileWriteMode::kText);
+        if (!stream_->IsValid())
         {
-#if defined(_WIN32)
+            // No reason string here; FileOutputStream has already logged one.
             GFXRECON_LOG_FATAL("Could not open dump resources output json file %s", filename.c_str());
-#else
-            GFXRECON_LOG_FATAL(
-                "Could not open dump resources output json file %s (%s)", filename.c_str(), strerror(ret));
-#endif
+            stream_.reset();
             return false;
         }
     }
 
-    util::platform::FileWrite("[\n", 2, file_);
+    util::Write(*stream_, "[\n");
 
     BlockStart();
     json_data_["header"] = header_;
@@ -135,23 +132,19 @@ bool VulkanReplayDumpResourcesJson::Open(const std::string& infile, const std::s
 
 void VulkanReplayDumpResourcesJson::Close()
 {
-    if (file_ != nullptr)
+    if (stream_ != nullptr)
     {
-        util::platform::FileWrite("]", 1, file_);
-        gfxrecon::util::platform::FileClose(file_);
-        file_ = nullptr;
+        util::Write(*stream_, "]");
+
+        if (memory_stream_ != nullptr)
+        {
+            util::RemoteChannel::SendActiveFile(filename_, memory_stream_->GetData(), memory_stream_->GetDataSize());
+        }
+
+        stream_.reset();
+        memory_stream_ = nullptr;
     }
     first_block_ = true;
-
-#if !defined(_WIN32)
-    if (mem_buf_ != nullptr)
-    {
-        util::RemoteChannel::SendActiveFile(filename_, mem_buf_, mem_size_);
-        free(mem_buf_);
-        mem_buf_  = nullptr;
-        mem_size_ = 0;
-    }
-#endif
 }
 
 nlohmann::ordered_json& VulkanReplayDumpResourcesJson::BlockStart()
@@ -168,17 +161,17 @@ nlohmann::ordered_json& VulkanReplayDumpResourcesJson::BlockStart()
 
 void VulkanReplayDumpResourcesJson::BlockEnd()
 {
-    assert(file_ != nullptr);
+    GFXRECON_ASSERT(stream_ != nullptr);
 
     if (!first_block_)
     {
-        util::platform::FileWrite(",\n", 2, file_);
+        util::Write(*stream_, ",\n");
     }
 
     first_block_ = false;
 
     const std::string block = json_data_.dump(util::kJsonIndentWidth);
-    util::platform::FileWrite(block.c_str(), block.size(), file_);
+    stream_->Write(block.c_str(), block.size());
 }
 
 nlohmann::ordered_json& VulkanReplayDumpResourcesJson::InsertSubEntry(const std::string& entry_name)

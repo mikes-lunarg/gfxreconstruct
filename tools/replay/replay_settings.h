@@ -426,7 +426,8 @@ static void PrintUsage(const char* exe_name)
     GFXRECON_WRITE_CONSOLE("  --remote-connect <address>");
     GFXRECON_WRITE_CONSOLE("          \t\tConnect out to a controller process for replay settings");
     GFXRECON_WRITE_CONSOLE("          \t\tand bidirectional I/O. Address forms: tcp:host:port,");
-    GFXRECON_WRITE_CONSOLE("          \t\tunix:@name (abstract), or unix:/path.");
+    GFXRECON_WRITE_CONSOLE("          \t\tunix:@name (abstract), or unix:/path. The unix: forms");
+    GFXRECON_WRITE_CONSOLE("          \t\tare not available on Windows.");
     GFXRECON_WRITE_CONSOLE("  --remote-listen <address>");
     GFXRECON_WRITE_CONSOLE("          \t\tListen for a controller process to connect (same address");
     GFXRECON_WRITE_CONSOLE("          \t\tforms as --remote-connect). Waits up to 30 seconds for a");

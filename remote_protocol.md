@@ -17,9 +17,13 @@ The core abstraction is `util::RemoteChannel`
 
 | Environment | Transport | Example address |
 |---|---|---|
-| Desktop | TCP | `tcp:localhost:9001` |
+| Any (Windows, Linux, macOS, Android) | TCP | `tcp:localhost:9001` |
 | Android / Linux | Abstract Unix domain socket | `unix:@gfxrecon` |
-| Linux | Filesystem Unix domain socket | `unix:/tmp/gfxrecon.sock` |
+| Linux / macOS | Filesystem Unix domain socket | `unix:/tmp/gfxrecon.sock` |
+
+Windows targets speak TCP only: there is no abstract namespace, and the
+controller has no `AF_UNIX` support there either. A `unix:` address on Windows
+is rejected with an error rather than silently falling back.
 
 Replay can establish the socket in either direction; the wire protocol is
 identical once the socket exists:
@@ -204,11 +208,12 @@ When a channel is active (`RemoteChannel::IsActive()`), file writers stream thei
 output over the socket instead of writing to disk, using process-wide statics
 (`SetActiveChannel` / `SendActiveFile`):
 
-- Screenshots — `image_writer.cpp` (`WriteBmpImage` via `open_memstream`,
-  `WritePngImage` via `stbi_write_png_to_func`).
+- Screenshots — `image_writer.cpp` (`WriteBmpImage` writes through a
+  `MemoryOutputStream` in place of the usual `FileOutputStream`; `WritePngImage`
+  collects bytes via `stbi_write_png_to_func`).
 - Dump-resources buffers — `buffer_writer.cpp` (`WriteBuffer`).
-- Dump-resources JSON — `vulkan_replay_dump_resources_json.cpp` (via
-  `open_memstream`).
+- Dump-resources JSON — `vulkan_replay_dump_resources_json.cpp` (same
+  `MemoryOutputStream` substitution, sent on `Close()`).
 
 If a send fails, `IsActive()` / `IsConnected()` become false and writers fall
 back to disk.
@@ -260,7 +265,7 @@ controller's working directory and pushed.
 --remote-listen  <address>   Listen for and accept one controller (30 s timeout).
 
   <address> forms:
-    tcp:host:port    TCP (desktop)
+    tcp:host:port    TCP (all platforms)
     unix:@name       abstract Unix socket (Linux/Android)
-    unix:/path       filesystem Unix socket
+    unix:/path       filesystem Unix socket (POSIX)
 ```

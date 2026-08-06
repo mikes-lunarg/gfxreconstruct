@@ -42,6 +42,16 @@
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(util)
 
+// Winsock's SOCKET is unsigned and pointer-sized; POSIX uses an int descriptor. Aliased to keep winsock2.h out of
+// this header.
+#if defined(_WIN32)
+using SocketHandle = uintptr_t;
+#else
+using SocketHandle = int;
+#endif
+
+constexpr SocketHandle kInvalidSocket = static_cast<SocketHandle>(-1); // Also Winsock's INVALID_SOCKET.
+
 // RemoteChannel links gfxrecon-replay to a controller process over a socket for bidirectional I/O. The controller
 // sends replay settings; replay sends back log messages, progress, screenshots, and dump-resources files. Replay can
 // establish the socket either as the client (Connect(), dialing out to a listening controller) or as the server
@@ -50,8 +60,6 @@ GFXRECON_BEGIN_NAMESPACE(util)
 // Wire format: each frame is a little-endian uint32_t length prefix followed by that many payload bytes. Structured
 // messages are JSON frames. A binary file payload is sent as a JSON "file" metadata frame immediately followed by a raw
 // binary frame.
-//
-// On platforms without socket support (e.g. Windows), all methods are no-ops and IsConnected() returns false.
 class RemoteChannel
 {
   public:
@@ -62,9 +70,9 @@ class RemoteChannel
     RemoteChannel& operator=(const RemoteChannel&) = delete;
 
     // Connect to the controller. Address forms:
-    //   "tcp:host:port"  - TCP connection (desktop)
+    //   "tcp:host:port"  - TCP connection (all platforms)
     //   "unix:@name"     - abstract Unix domain socket (Linux/Android)
-    //   "unix:/path"     - filesystem-backed Unix domain socket
+    //   "unix:/path"     - filesystem-backed Unix domain socket (POSIX)
     // Returns true on success.
     bool Connect(const std::string& address);
 
@@ -138,8 +146,8 @@ class RemoteChannel
     bool SendAll(const void* buf, size_t size);
     bool RecvExact(void* buf, size_t size);
 
-    int fd_{ -1 };
-    int listen_fd_{ -1 }; // Listening socket in Listen() mode; closed once a connection is accepted.
+    SocketHandle fd_{ kInvalidSocket };
+    SocketHandle listen_fd_{ kInvalidSocket }; // Closed once a connection is accepted.
 
     std::thread                      sender_thread_;
     std::mutex                       queue_mutex_;
