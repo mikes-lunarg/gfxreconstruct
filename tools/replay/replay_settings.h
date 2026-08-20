@@ -38,7 +38,7 @@ const char kOptions[] =
     "screenshot-ignore-FrameBoundaryANDROID,--screenshot-apply-prerotation,--deduplicate-device,--log-timestamps,--"
     "capture,--idle-before-submit,--"
     "serialize-render-passes,--serialize-queue-submissions,--async-processing,--isolate-render-passes,--serialize-"
-    "compute-and-transfer,--annotate-injected-commands";
+    "compute-and-transfer,--annotate-injected-commands,--remote-base64";
 const char kArguments[] =
     "--log-level,--log-file,--cpu-mask,--gpu,--gpu-group,--pause-frame,--wsi,--surface-index,-m|--memory-translation,"
     "--replace-shaders,--screenshots,--screenshot-interval,--denied-messages,--allowed-messages,--screenshot-format,--"
@@ -433,6 +433,10 @@ static void PrintUsage(const char* exe_name)
     GFXRECON_WRITE_CONSOLE("          \t\tforms as --remote-connect). Waits up to 30 seconds for a");
     GFXRECON_WRITE_CONSOLE("          \t\tconnection, then fails. Mutually exclusive with");
     GFXRECON_WRITE_CONSOLE("          \t\t--remote-connect.");
+    GFXRECON_WRITE_CONSOLE("  --remote-base64");
+    GFXRECON_WRITE_CONSOLE("          \t\tPROTOTYPE: send streamed files as base64 inside the JSON");
+    GFXRECON_WRITE_CONSOLE("          \t\t\"file\" message instead of as a raw binary frame, to");
+    GFXRECON_WRITE_CONSOLE("          \t\tmeasure the cost of an all-JSON protocol.");
 
 #if defined(_WIN32)
     GFXRECON_WRITE_CONSOLE("")

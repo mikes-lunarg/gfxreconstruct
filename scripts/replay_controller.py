@@ -60,6 +60,7 @@ Android usage (replay listens, abstract unix socket forwarded to the PC):
 '''
 
 import argparse
+import base64
 import json
 import os
 import queue
@@ -91,6 +92,17 @@ INPUT_FILE_OPTIONS = (
     'frame_warm_up_spirv',
     'load_pipeline_cache',
 )
+
+last_prog = time.time()
+wire_bytes = 0  # every byte read off the socket, length prefixes included
+step_bytes = 0  # wire bytes since the last progress message
+step_files = 0  # 'file' messages since the last progress message
+
+# PROTOTYPE base64 accounting, for comparing an all-JSON protocol against raw binary frames.
+payload_bytes = 0  # file contents after any decoding
+decode_seconds = 0.0  # time spent turning base64 back into bytes
+parse_seconds = 0.0  # time spent in json.loads, which a base64 payload inflates
+base64_files = 0  # 'file' messages that arrived base64-encoded
 
 
 def normalize(token):
@@ -199,10 +211,13 @@ def recv_exact(conn, length):
 
 def recv_frame(conn):
     '''Read one length-prefixed frame. Returns bytes, or None on disconnect.'''
+    global wire_bytes, step_bytes
     header = recv_exact(conn, 4)
     if header is None:
         return None
     (length, ) = struct.unpack('<I', header)
+    wire_bytes += 4 + length
+    step_bytes += 4 + length
     if length == 0:
         return b''
     return recv_exact(conn, length)
@@ -240,10 +255,18 @@ def start_command_reader():
     return commands
 
 
-def handle_session(conn, options, output_dir, hello=None, input_files=()):
+def handle_session(conn,
+                   options,
+                   output_dir,
+                   hello=None,
+                   input_files=(),
+                   use_base64=False):
     '''Run the handshake and process messages until replay reports done.
 
     options is the settings dict sent to replay.
+
+    use_base64 encodes pushed input files as base64 inside the 'file' message. Inbound files are handled by whatever
+    encoding each message declares, regardless of this flag.
 
     hello is replay's already-received greeting frame when the caller read it during connection setup
     (connect mode); when None (listen mode) it is read here.
@@ -264,9 +287,19 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
 
     # Input files must precede the settings message, which ends our opening turn.
     for name, blob in input_files:
-        send_json(conn, {'type': 'file', 'name': name, 'size': len(blob)})
-        send_frame(conn, blob)
-        print(f'Sent input file: {name} ({len(blob)} bytes)')
+        header = {'type': 'file', 'name': name, 'size': len(blob)}
+        if use_base64:
+            start = time.perf_counter()
+            header['encoding'] = 'base64'
+            header['data'] = base64.b64encode(blob).decode('ascii')
+            encode_ms = (time.perf_counter() - start) * 1000
+            send_json(conn, header)
+            print(f'Sent input file: {name} ({len(blob)} bytes, base64 in '
+                  f'{encode_ms:.3f}ms)')
+        else:
+            send_json(conn, header)
+            send_frame(conn, blob)
+            print(f'Sent input file: {name} ({len(blob)} bytes)')
 
     send_json(conn, {'type': 'settings', 'options': options})
     print('Sent settings:')
@@ -306,7 +339,10 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
             print('Replay disconnected')
             break
 
+        global parse_seconds
+        parse_start = time.perf_counter()
         msg = json.loads(frame)
+        parse_seconds += time.perf_counter() - parse_start
         msg_type = msg.get('type')
 
         if msg_type == 'log':
@@ -333,13 +369,32 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
                 parts.append(frame_part)
             if last_current is not None:
                 parts.append(f"{last_op} {last_current}/{last_total}")
-            print(f"--- progress: {', '.join(parts)}")
+            global last_prog, step_bytes, step_files
+            cur_time = time.time()
+            delta = cur_time - last_prog
+            last_prog = cur_time
+            rate = (step_bytes / delta / (1 << 20)) if delta > 0 else 0.0
+            print(f"--- progress: {', '.join(parts)} "
+                  f"(delta={delta*1000:.3f}ms, {step_bytes/1024:.1f}KiB in "
+                  f"{step_files} files, {rate:.2f}MiB/s, "
+                  f"total {wire_bytes/(1<<20):.1f}MiB) ---")
+            step_bytes = 0
+            step_files = 0
         elif msg_type == 'file':
-            # A "file" message is always followed by a raw binary frame.
+            # The payload is either base64 inside this message or the raw binary frame that follows it.
+            global payload_bytes, decode_seconds, base64_files
+            step_files += 1
             name = msg.get('name', 'unnamed')
             expected = msg.get('size', 0)
-            blob = recv_frame(conn)
-            blob = blob if blob is not None else b''
+            if msg.get('encoding') == 'base64':
+                base64_files += 1
+                start = time.perf_counter()
+                blob = base64.b64decode(msg.get('data', ''))
+                decode_seconds += time.perf_counter() - start
+            else:
+                blob = recv_frame(conn)
+                blob = blob if blob is not None else b''
+            payload_bytes += len(blob)
             save_file(output_dir, name, blob, expected)
         elif msg_type == 'done':
             success = bool(msg.get('success'))
@@ -350,7 +405,20 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
 
         prev_msg_type = msg_type
 
+    print_transfer_summary()
+
     return success
+
+
+def print_transfer_summary():
+    '''PROTOTYPE: report what the encoding cost on this side of the socket.'''
+    if wire_bytes == 0:
+        return
+    expansion = (wire_bytes / payload_bytes) if payload_bytes else 0.0
+    print(f'--- transfer: {payload_bytes / (1 << 20):.1f}MiB payload in '
+          f'{wire_bytes / (1 << 20):.1f}MiB on the wire ({expansion:.3f}x), '
+          f'{base64_files} base64 files, {decode_seconds * 1000:.1f}ms '
+          f'base64 decode, {parse_seconds * 1000:.1f}ms json parse ---')
 
 
 def save_file(output_dir, name, blob, expected_size):
@@ -437,6 +505,15 @@ rejects any key it does not recognize, naming it in the error.''')
         help=
         'Directory for files streamed back by replay (default: remote_output).'
     )
+    parser.add_argument(
+        '--base64',
+        action='store_true',
+        help='PROTOTYPE: base64-encode binary payloads in both directions '
+        'instead of sending raw binary frames, to measure the cost of an '
+        'all-JSON protocol. Encodes pushed input files and adds '
+        'remote_base64=true to the settings so replay encodes what it streams '
+        'back. Pass remote_base64 in the settings instead to encode only the '
+        'replay-to-controller direction.')
     parser.add_argument('--self-test',
                         action='store_true',
                         help='Run this script\'s doctests and exit.')
@@ -466,6 +543,10 @@ rejects any key it does not recognize, naming it in the error.''')
     # Every path in the settings resolves on the replay device, so any input file that lives here must be pushed
     # over the socket and its option value rewritten to the name replay will know it by.
     options, input_files = collect_input_files(options)
+
+    # One flag flips both directions: this side encodes what it pushes, replay encodes what it streams back.
+    if args.base64:
+        options.setdefault('remote_base64', 'true')
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -538,7 +619,7 @@ rejects any key it does not recognize, naming it in the error.''')
         print(f'Connected to replay at {host}:{port}')
         with conn:
             success = handle_session(conn, options, args.output_dir, hello,
-                                     input_files)
+                                     input_files, args.base64)
 
         return 0 if success else 1
 
@@ -604,7 +685,8 @@ rejects any key it does not recognize, naming it in the error.''')
         success = handle_session(conn,
                                  options,
                                  args.output_dir,
-                                 input_files=input_files)
+                                 input_files=input_files,
+                                 use_base64=args.base64)
 
     return 0 if success else 1
 

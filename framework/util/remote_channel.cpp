@@ -41,6 +41,7 @@
 
 #include "util/remote_channel.h"
 
+#include "util/base64.h"
 #include "util/input_file_store.h"
 #include "util/logging.h"
 
@@ -780,10 +781,35 @@ bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
     }
     const std::string name = name_entry->get<std::string>();
 
-    // The frame's length prefix is authoritative; size is only cross-checked, so a mis-framed transfer fails here
-    // rather than surfacing later as a corrupt input file.
+    // Each "file" message names its own encoding, so a controller can push base64 whether or not this replay asked for
+    // it. Absent the field the payload is a raw binary frame, as before.
+    const auto encoding_entry = header.find("encoding");
+    const bool is_base64      = (encoding_entry != header.end()) && encoding_entry->is_string() &&
+                           (encoding_entry->get<std::string>() == "base64");
+
+    // The received length is authoritative; size is only cross-checked, so a mis-framed transfer fails here rather
+    // than surfacing later as a corrupt input file.
     std::vector<uint8_t> data;
-    if (!RecvFrame(data))
+    double               decode_ms = 0.0;
+    if (is_base64)
+    {
+        const auto data_entry = header.find("data");
+        if ((data_entry == header.end()) || !data_entry->is_string())
+        {
+            GFXRECON_LOG_ERROR("Remote channel: base64 input file \"%s\" message is missing its data", name.c_str());
+            return false;
+        }
+
+        const std::string& encoded      = data_entry->get_ref<const nlohmann::json::string_t&>();
+        const auto         decode_start = std::chrono::steady_clock::now();
+        if (!Base64Decode(encoded.data(), encoded.size(), data))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: input file \"%s\" is not valid base64", name.c_str());
+            return false;
+        }
+        decode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decode_start).count();
+    }
+    else if (!RecvFrame(data))
     {
         GFXRECON_LOG_ERROR("Remote channel: failed receiving contents of input file \"%s\"", name.c_str());
         return false;
@@ -807,9 +833,12 @@ bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
     }
 
     // The controller's name, never where the file landed: target-side handling stays unspecified.
-    GFXRECON_LOG_INFO("Remote channel: received input file \"%s\" (%" PRIu64 " bytes)",
+    const std::string encoding_note =
+        is_base64 ? ("base64, decoded in " + std::to_string(decode_ms) + " ms") : std::string("raw");
+    GFXRECON_LOG_INFO("Remote channel: received input file \"%s\" (%" PRIu64 " bytes, %s)",
                       name.c_str(),
-                      static_cast<uint64_t>(data.size()));
+                      static_cast<uint64_t>(data.size()),
+                      encoding_note.c_str());
 
     return InputFileStore::Add(name, data);
 }
@@ -863,15 +892,95 @@ void RemoteChannel::SendFile(const std::string& name, const void* data, size_t s
         return;
     }
 
-    nlohmann::json header  = { { "type", "file" }, { "name", name }, { "size", size } };
-    std::string    payload = header.dump();
+    // PROTOTYPE instrumentation: packing runs on the caller's thread, so this is time charged to replay, not to the
+    // sender thread.
+    const auto pack_start = std::chrono::steady_clock::now();
 
-    // Queue both frames as one buffer so the JSON header and binary data are never interleaved with other senders.
+    nlohmann::json header = { { "type", "file" }, { "name", name }, { "size", size } };
+
     std::vector<uint8_t> buffer;
-    buffer.reserve((2 * sizeof(uint32_t)) + payload.size() + size);
-    AppendFrame(buffer, payload.data(), static_cast<uint32_t>(payload.size()));
-    AppendFrame(buffer, data, static_cast<uint32_t>(size));
+    if (base64_files_)
+    {
+        // The payload rides inside the JSON, so no binary frame follows. Rather than making the base64 a json string
+        // member and letting dump() copy and escape-scan it, dump the header without it and splice the encoding
+        // straight into the frame. Base64 has no characters JSON would escape, so nothing is lost, and the string is
+        // written once instead of three times. nlohmann still escapes the name, which can hold path separators.
+        header["encoding"]  = "base64";
+        std::string  prefix = header.dump();
+        const size_t suffix = 2; // The closing quote and brace, appended below.
+        GFXRECON_ASSERT(!prefix.empty() && (prefix.back() == '}'));
+        prefix.back() = ',';
+        prefix += "\"data\":\"";
+
+        const size_t encoded_size = Base64EncodedSize(size);
+        const size_t frame_size   = prefix.size() + encoded_size + suffix;
+        buffer.resize(sizeof(uint32_t) + frame_size);
+
+        uint8_t* out = buffer.data();
+
+        const uint32_t length = static_cast<uint32_t>(frame_size); // Little-endian target; no byte-swap needed.
+        std::memcpy(out, &length, sizeof(length));
+        out += sizeof(length);
+
+        std::memcpy(out, prefix.data(), prefix.size());
+        out += prefix.size();
+
+        const auto encode_start = std::chrono::steady_clock::now();
+        Base64EncodeTo(reinterpret_cast<char*>(out), data, size);
+        stat_encode_ns_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - encode_start)
+                .count());
+        out += encoded_size;
+
+        out[0] = '"';
+        out[1] = '}';
+    }
+    else
+    {
+        std::string payload = header.dump();
+
+        // Queue both frames as one buffer so the JSON header and binary data are never interleaved with other senders.
+        buffer.reserve((2 * sizeof(uint32_t)) + payload.size() + size);
+        AppendFrame(buffer, payload.data(), static_cast<uint32_t>(payload.size()));
+        AppendFrame(buffer, data, static_cast<uint32_t>(size));
+    }
+
+    ++stat_files_;
+    stat_payload_bytes_ += size;
+    stat_wire_bytes_ += buffer.size();
+    stat_pack_ns_ += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - pack_start).count());
+
     EnqueueFrames(std::move(buffer));
+}
+
+void RemoteChannel::LogFileTransferStats() const
+{
+    const uint64_t files     = stat_files_.load();
+    const uint64_t payload   = stat_payload_bytes_.load();
+    const uint64_t wire      = stat_wire_bytes_.load();
+    const double   encode_ms = static_cast<double>(stat_encode_ns_.load()) / 1e6;
+    const double   pack_ms   = static_cast<double>(stat_pack_ns_.load()) / 1e6;
+
+    if (files == 0)
+    {
+        return;
+    }
+
+    const double payload_mib = static_cast<double>(payload) / (1024.0 * 1024.0);
+    const double expansion   = (payload > 0) ? (static_cast<double>(wire) / static_cast<double>(payload)) : 0.0;
+    const double throughput  = (pack_ms > 0.0) ? (payload_mib / (pack_ms / 1000.0)) : 0.0;
+
+    GFXRECON_LOG_INFO("Remote channel file transfer (%s): %" PRIu64 " files, %.1f MiB payload, %.1f MiB on the wire "
+                      "(%.3fx), %.1f ms packing of which %.1f ms base64 (%.0f MiB/s payload through the pack step)",
+                      base64_files_ ? "base64" : "raw",
+                      files,
+                      payload_mib,
+                      static_cast<double>(wire) / (1024.0 * 1024.0),
+                      expansion,
+                      pack_ms,
+                      encode_ms,
+                      throughput);
 }
 
 void RemoteChannel::SendLog(LoggingSeverity severity, const std::string& message)
@@ -892,7 +1001,7 @@ void RemoteChannel::SendDone(bool success)
 
 void RemoteChannel::AppendFrame(std::vector<uint8_t>& buffer, const void* data, uint32_t size)
 {
-    uint32_t length = size; // All target devices are little-endian; no byte-swap needed.
+    uint32_t    length       = size; // All target devices are little-endian; no byte-swap needed.
     const auto* length_bytes = reinterpret_cast<const uint8_t*>(&length);
     buffer.insert(buffer.end(), length_bytes, length_bytes + sizeof(length));
     const auto* data_bytes = static_cast<const uint8_t*>(data);

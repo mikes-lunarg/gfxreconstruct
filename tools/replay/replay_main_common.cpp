@@ -93,6 +93,9 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
         return RemoteSetupResult::kFailed;
     }
 
+    // PROTOTYPE: outbound file encoding. Set before replay starts, so before any file is streamed.
+    channel.SetBase64Files(arg_parser.IsOptionSet("--remote-base64"));
+
     // Point options at the copies the controller pushed. A value it did not push is left alone, which is the escape
     // hatch for a file already staged on the device.
     for (const char* argument : kRemoteInputFileArguments)
@@ -112,6 +115,8 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
 
 void ShutdownRemoteChannel(util::RemoteChannel& channel, bool success)
 {
+    channel.LogFileTransferStats();
+
     // Stop relaying log output and file writes before notifying the controller that replay is complete.
     util::RemoteChannel::SetActiveChannel(nullptr);
     channel.SendDone(success);

@@ -60,8 +60,10 @@ Every frame is a length-prefixed byte string:
   on window events (Android has no keyboard).
 - Structured messages are UTF-8 JSON payloads. These could be migrated to a binary format such as protobuf or even GFXR's own encode/decode machinery.
 - Binary file payloads are sent as a JSON `"file"` metadata frame **immediately
-  followed** by a separate raw binary frame (no base64). After a `"file"`
-  message the receiver treats the next frame as raw bytes.
+  followed** by a separate raw binary frame. After a `"file"` message the
+  receiver treats the next frame as raw bytes. See
+  [Base64 Payloads](#base64-payloads-prototype) for the all-JSON alternative and
+  what it costs.
 
 ## Startup Handshake
 
@@ -217,6 +219,106 @@ output over the socket instead of writing to disk, using process-wide statics
 
 If a send fails, `IsActive()` / `IsConnected()` become false and writers fall
 back to disk.
+
+## Base64 Payloads (prototype)
+
+An alternative encoding exists to measure what a pure-JSON protocol would cost.
+A `file` message can carry its payload inline instead of in a following binary
+frame:
+
+```json
+{"type":"file","name":"dump/frame_0042.png","size":204800,
+ "encoding":"base64","data":"iVBORw0KGgo..."}
+```
+
+- `encoding` is per message, so each side can be switched independently and a
+  receiver handles either form. Absent the field the payload is the raw binary
+  frame that follows, as above.
+- No binary frame follows a base64 `file` message.
+- `size` is still the decoded byte count, and is still cross-checked against what
+  the receiver decodes.
+
+Switches:
+
+- `--remote-base64` on replay (settings key `remote_base64`) encodes what replay
+  streams back.
+- `--base64` on `replay_controller.py` encodes pushed input files *and* adds
+  `remote_base64=true` to the settings, flipping both directions at once. Pass
+  `remote_base64=true` in the settings without `--base64` to encode only the
+  replay-to-controller direction.
+
+Both sides report a summary when the session ends: payload vs. wire bytes, and
+time spent encoding, decoding, and in JSON serialization.
+
+### Implementation note
+
+The base64 is spliced into the frame rather than made a `nlohmann::json` string
+member: the header is dumped without `data`, the closing brace is reopened, and
+the encoding is written directly into the frame buffer. Base64 contains no
+character JSON would escape, so `dump()`'s escape scan and its copy of the string
+buy nothing. `name` still goes through nlohmann, which is what escapes path
+separators. This matters more than the encoding itself — see below.
+
+### Measured cost
+
+Android, a game capture replayed with dump-resources: 1418.5 MiB in 1557 files,
+against the [streaming baseline](#file-streaming). The middle column is base64
+built as a `nlohmann::json` string member, the right column the spliced encoding
+described above:
+
+| | raw | base64 via json | base64 spliced |
+|---|---|---|---|
+| Total replay time | 42.6 s | 51.4 s (**+20.6%**) | 43.4 s (**+1.8%**) |
+| Bytes on the wire | 1418.6 MiB | 1891.5 MiB (1.333x) | 1891.5 MiB (1.333x) |
+| Replay-side packing | — | 11.1 s | 2.4 s |
+| — of which base64 conversion | — | 2.1 s | 1.1 s |
+| Controller base64 decode | — | 3.1 s | 2.7 s |
+| Controller `json.loads` | 0.07 s | 3.4 s | 2.8 s |
+
+Packing runs on the thread that calls `SendFile`, so it lands inline in replay's
+critical path. At 11.1 s it by itself over-accounted for the whole +8.8 s
+regression, and **base64 was only 19% of it** — the rest was `nlohmann::json`
+building an object around a megabyte-scale string and re-scanning it for
+characters to escape. Splicing cut packing 4.6x and the regression to noise.
+
+The two costs that were hiding behind packing turn out not to matter here. The
+wire still carries 473 MiB more and the controller still burns 5.5 s of
+single-threaded Python, yet total time moved 0.8 s: adb has the headroom, and a
+13% controller duty cycle keeps up. This is consistent with the baseline finding
+that the device-side dump work, not the sink, is the critical path.
+
+### When the link is the bottleneck
+
+The same capture over a USB 2.0 cable, where it is not:
+
+| | raw | base64 spliced |
+|---|---|---|
+| Wall clock, replay through exit | 48 s | 59 s (**+23%**) |
+| Replay's own reported total | — | 43.8 s |
+| Replay-side packing | — | 2.2 s |
+
+The 11 s is the expansion at wire speed and nothing else: 473 MiB of extra bytes
+over 11 s of extra wall clock is 43 MiB/s, the link's bulk rate. Packing was
+unchanged from the fast-link run, so no CPU cost was added — only bytes.
+
+Two things this exposes:
+
+- **Replay's own timing goes blind.** It reported 43.8 s, indistinguishable from
+  the fast-link run, while the wall clock was 59 s. `SendFile` only enqueues, and
+  the queue is unbounded, so replay finishes its loop and the remaining backlog —
+  on the order of 400-500 MiB here — drains afterwards. A slow link shows up as
+  device memory and a long tail after `done`, not as slower replay. Bounding the
+  queue would convert that into visible backpressure.
+- **The 1.333x is paid in full once transport is the critical path.** On adb over
+  USB 3 the link absorbs it for ~2%; one cable slower and the same encoding costs
+  23%. Which regime a setup is in is not a property of the encoding.
+
+Also unchanged by the splice: peak transient memory per file is ~2.3x the payload.
+
+Of the 2.4 s that remains, 1.1 s is the conversion itself and most of the rest is
+zero-filling the frame buffer that `vector::resize` cannot skip. Eliminating that
+needs an uninitialized-resize allocator or C++23's `resize_and_overwrite`, and
+would leave the encoding at its floor.
 
 ## Threading Model
 

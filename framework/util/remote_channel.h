@@ -104,6 +104,16 @@ class RemoteChannel
     void SendProgress(uint64_t frame, uint64_t block);
     void SendDone(bool success); // Also calls Disconnect().
 
+    // PROTOTYPE: when enabled, SendFile carries its payload as a base64 string inside the JSON "file" message instead
+    // of as a following raw binary frame. Set from --remote-base64 after the handshake, which is before any file is
+    // streamed. Inbound files are self-describing (each "file" message names its own encoding), so receiving does not
+    // depend on this flag.
+    void SetBase64Files(bool enable) { base64_files_ = enable; }
+
+    // PROTOTYPE: log the accumulated file-transfer cost (payload vs. wire bytes, base64 and packing time). Call before
+    // SendDone so the summary still reaches the controller.
+    void LogFileTransferStats() const;
+
     // Register (or clear, with nullptr) the process-wide channel. Called once during remote setup and cleared during
     // shutdown, both on the main thread.
     static void SetActiveChannel(RemoteChannel* channel);
@@ -155,6 +165,15 @@ class RemoteChannel
     std::deque<std::vector<uint8_t>> send_queue_;              // Guarded by queue_mutex_.
     bool                             stop_requested_{ false }; // Guarded by queue_mutex_.
     std::atomic<bool>                send_failed_{ false };
+
+    // PROTOTYPE: base64 file payloads, and the cost of producing them. Counters are written from whichever thread
+    // calls SendFile, so they are atomic.
+    bool                  base64_files_{ false };
+    std::atomic<uint64_t> stat_files_{ 0 };
+    std::atomic<uint64_t> stat_payload_bytes_{ 0 }; // File contents before any encoding.
+    std::atomic<uint64_t> stat_wire_bytes_{ 0 };    // Framed bytes queued for the socket.
+    std::atomic<uint64_t> stat_encode_ns_{ 0 };     // Base64 conversion only.
+    std::atomic<uint64_t> stat_pack_ns_{ 0 };       // All of SendFile: encode, JSON dump, and buffer copies.
 
     std::thread             receiver_thread_;
     std::mutex              trigger_mutex_;
