@@ -46,6 +46,8 @@ target_sources(gfxrecon_util
                     ${CMAKE_CURRENT_LIST_DIR}/api_version_info.cpp
                     ${CMAKE_CURRENT_LIST_DIR}/argument_parser.h
                     ${CMAKE_CURRENT_LIST_DIR}/argument_parser.cpp
+                    ${CMAKE_CURRENT_LIST_DIR}/base64.h
+                    ${CMAKE_CURRENT_LIST_DIR}/base64.cpp
                     ${CMAKE_CURRENT_LIST_DIR}/buffer_writer.h
                     ${CMAKE_CURRENT_LIST_DIR}/buffer_writer.cpp
                     ${CMAKE_CURRENT_LIST_DIR}/callbacks.h
