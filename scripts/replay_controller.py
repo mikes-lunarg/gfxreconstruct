@@ -56,6 +56,10 @@ Android usage (replay listens, abstract unix socket forwarded to the PC):
     python3 scripts/replay_controller.py --connect localhost:9001 --launch-adb -- capture_file=/sdcard/capture.gfxr
     # sets up: adb forward tcp:9001 localabstract:gfxrecon
     # launches the replay activity with intent args: --remote-listen unix:@gfxrecon
+
+Backpressure testing (a slow controller against replay's bounded send queue):
+    python3 scripts/replay_controller.py --listen 127.0.0.1:9001 --slow-recv 8 -- \\
+        dump_resources=dr.json capture_file=capture.gfxr
 '''
 
 import argparse
@@ -132,6 +136,42 @@ def settings_from_args(tokens):
     return options
 
 
+recv_rate = 0.0  # --slow-recv byte rate; 0 leaves reads unthrottled
+recv_sleep_seconds = 0.0  # time this side spent deliberately not reading
+
+
+def throttle_recv(count):
+    '''Sleep long enough that reads average recv_rate bytes per second.
+
+    Sleeping after the read rather than before it is the point: the kernel keeps filling the receive buffer while
+    we are idle, so once that buffer is full the stall propagates back to replay as a blocked send.
+    '''
+    global recv_sleep_seconds
+    if recv_rate <= 0:
+        return
+    delay = count / recv_rate
+    recv_sleep_seconds += delay
+    time.sleep(delay)
+
+
+def apply_recv_throttle(conn, mib_per_second):
+    '''Slow this side's reads to mib_per_second, to exercise replay's send queue bound.'''
+    global recv_rate
+    if mib_per_second <= 0:
+        return
+    recv_rate = mib_per_second * (1 << 20)
+
+    # Shrink the receive buffer so the stall reaches replay promptly instead of after the kernel has quietly
+    # absorbed several MiB. Advisory: the window may already have been negotiated larger.
+    try:
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
+    except OSError as e:
+        print(f'Warning: could not shrink the receive buffer: {e}',
+              file=sys.stderr)
+
+    print(f'Throttling reads to {mib_per_second:.1f} MiB/s')
+
+
 def recv_exact(conn, length):
     '''Read exactly length bytes, or return None if the peer closes early.'''
     chunks = []
@@ -142,6 +182,7 @@ def recv_exact(conn, length):
             return None
         chunks.append(chunk)
         remaining -= len(chunk)
+        throttle_recv(len(chunk))
     return b''.join(chunks)
 
 
@@ -217,6 +258,10 @@ def handle_session(conn, options, output_dir, hello=None):
             break
         else:
             print(f'Unknown message: {msg}', file=sys.stderr)
+
+    if recv_rate > 0:
+        print(f'--- recv throttle: {recv_rate / (1 << 20):.1f} MiB/s, '
+              f'{recv_sleep_seconds:.1f}s spent not reading ---')
 
     return success
 
@@ -404,8 +449,9 @@ def adb_prepare(mode, port):
         raise ControllerError(f'failed to set up adb remote: {e}') from e
 
 
-def run_session(conn, options, output_dir, hello=None):
+def run_session(conn, options, output_dir, hello=None, slow_recv=0.0):
     '''Drive one replay session over an already-connected socket. Returns True on success.'''
+    apply_recv_throttle(conn, slow_recv)
     with conn:
         return handle_session(conn, options, output_dir, hello)
 
@@ -415,6 +461,7 @@ def run_replay(options,
                mode='listen',
                host='127.0.0.1',
                port=9001,
+               slow_recv=0.0,
                launch=None,
                launch_adb=False):
     '''Set up the transport, optionally start replay, and drive one session.
@@ -452,7 +499,7 @@ def run_replay(options,
             reap_replay(proc)
             return False
         print(f'Connected to replay at {host}:{port}')
-        success = run_session(conn, options, output_dir, hello)
+        success = run_session(conn, options, output_dir, hello, slow_recv)
     else:
         server, port = open_listen_socket(host, port)
         print(f'Listening on {host}:{port}')
@@ -466,7 +513,7 @@ def run_replay(options,
 
             conn, peer = server.accept()
             print(f'Replay connected from {peer[0]}:{peer[1]}')
-        success = run_session(conn, options, output_dir, None)
+        success = run_session(conn, options, output_dir, None, slow_recv)
 
     returncode = reap_replay(proc)
     if returncode:
@@ -517,6 +564,15 @@ rejects any key it does not recognize, naming it in the error.''')
         help=
         'Directory for files streamed back by replay (default: remote_output).'
     )
+    parser.add_argument(
+        '--slow-recv',
+        type=float,
+        default=0.0,
+        metavar='MIB_PER_S',
+        help='Read at roughly this rate instead of as fast as possible, to '
+        'exercise replay\'s bounded send queue. Also shrinks this side\'s '
+        'receive buffer so the stall reaches replay promptly. 0 (the default) '
+        'leaves reads unthrottled.')
     parser.add_argument('--self-test',
                         action='store_true',
                         help='Run this script\'s doctests and exit.')
@@ -565,6 +621,7 @@ rejects any key it does not recognize, naming it in the error.''')
                              mode=mode,
                              host=host,
                              port=port,
+                             slow_recv=args.slow_recv,
                              launch=args.launch,
                              launch_adb=args.launch_adb)
     except KeyboardInterrupt:
