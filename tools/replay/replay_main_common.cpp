@@ -38,9 +38,31 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <string>
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(replay)
+
+// Send queue bound in MiB, with 0 meaning unbounded. Falls back to the channel default when unset or unusable.
+static size_t GetRemoteQueueLimit(const util::ArgumentParser& arg_parser)
+{
+    const std::string& value = arg_parser.GetArgumentValue("--remote-queue-limit");
+    if (value.empty())
+    {
+        return util::kDefaultSendQueueLimit;
+    }
+
+    // Length-capped as well as digit-checked, because the value can come from a remote controller and std::stoull
+    // throws on anything that does not fit.
+    if ((value.find_first_not_of("0123456789") != std::string::npos) || (value.length() > 6))
+    {
+        GFXRECON_LOG_WARNING("Ignoring invalid remote queue limit \"%s\", expected a size in MiB from 0 to 999999",
+                             value.c_str());
+        return util::kDefaultSendQueueLimit;
+    }
+
+    return static_cast<size_t>(std::stoull(value)) * 1024 * 1024;
+}
 
 RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::ArgumentParser& arg_parser)
 {
@@ -93,6 +115,8 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
         return RemoteSetupResult::kFailed;
     }
 
+    channel.SetSendQueueLimit(GetRemoteQueueLimit(arg_parser));
+
     // Point options at the copies the controller pushed. A value it did not push is left alone, which is the escape
     // hatch for a file already staged on the device.
     for (const char* argument : kRemoteInputFileArguments)
@@ -112,6 +136,8 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel& channel, util::Argumen
 
 void ShutdownRemoteChannel(util::RemoteChannel& channel, bool success)
 {
+    channel.LogSendQueueStats();
+
     // Stop relaying log output and file writes before notifying the controller that replay is complete.
     util::RemoteChannel::SetActiveChannel(nullptr);
     channel.SendDone(success);

@@ -48,7 +48,7 @@ const char kArguments[] =
     "format,--pbis,--pcj|--pipeline-creation-jobs,--save-pipeline-cache,--load-pipeline-cache,--quit-after-frame,--"
     "present-mode,--wait-before-first-submit,--present-override,--frame-"
     "warm-up-spirv,--frame-warm-up-load,--wait-before-frame,--loop-frame,--loop-count,--"
-    "replay-event-plugin-path,--replay-event-plugin-params,--remote-connect,--remote-listen";
+    "replay-event-plugin-path,--replay-event-plugin-params,--remote-connect,--remote-listen,--remote-queue-limit";
 
 // Replay options whose value names a file that replay reads. A remote controller pushes these during the handshake.
 // Keep in sync with INPUT_FILE_OPTIONS in scripts/replay_controller.py, which holds the normalized settings-map
@@ -433,6 +433,10 @@ static void PrintUsage(const char* exe_name)
     GFXRECON_WRITE_CONSOLE("          \t\tforms as --remote-connect). Waits up to 30 seconds for a");
     GFXRECON_WRITE_CONSOLE("          \t\tconnection, then fails. Mutually exclusive with");
     GFXRECON_WRITE_CONSOLE("          \t\t--remote-connect.");
+    GFXRECON_WRITE_CONSOLE("  --remote-queue-limit <MiB>");
+    GFXRECON_WRITE_CONSOLE("          \t\tMaximum data buffered for the remote controller before");
+    GFXRECON_WRITE_CONSOLE("          \t\treplay blocks waiting for it to be sent. Defaults to 64,");
+    GFXRECON_WRITE_CONSOLE("          \t\tand 0 leaves the send queue unbounded.");
 
 #if defined(_WIN32)
     GFXRECON_WRITE_CONSOLE("")

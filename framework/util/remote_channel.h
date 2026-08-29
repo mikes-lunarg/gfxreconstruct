@@ -52,6 +52,11 @@ using SocketHandle = int;
 
 constexpr SocketHandle kInvalidSocket = static_cast<SocketHandle>(-1); // Also Winsock's INVALID_SOCKET.
 
+// Default cap on the bytes RemoteChannel will hold for the socket before a file send blocks. Big enough to absorb a
+// burst of dumped resources without stalling replay, small enough that a slow controller cannot grow replay's
+// footprint without bound.
+constexpr size_t kDefaultSendQueueLimit = 64 * 1024 * 1024;
+
 // RemoteChannel links gfxrecon-replay to a controller process over a socket for bidirectional I/O. The controller
 // sends replay settings; replay sends back log messages, progress, screenshots, and dump-resources files. Replay can
 // establish the socket either as the client (Connect(), dialing out to a listening controller) or as the server
@@ -95,14 +100,25 @@ class RemoteChannel
     bool TryPopTrigger(std::string* action);
     bool WaitPopTrigger(std::string* action, std::chrono::milliseconds timeout);
 
-    // The following are thread-safe, non-blocking, and no-ops when disconnected. Messages are queued and delivered
-    // in order by a background sender thread; if a send fails, queued messages are dropped and the channel reports
-    // disconnected. Disconnect() flushes any queued messages before closing the socket.
+    // The following are thread-safe and no-ops when disconnected. Messages are queued and delivered in order by a
+    // background sender thread; if a send fails, queued messages are dropped and the channel reports disconnected.
+    // Disconnect() flushes any queued messages before closing the socket. All are non-blocking except SendFile, which
+    // applies backpressure once the queue is full (see SetSendQueueLimit).
     void SendJson(const nlohmann::json& msg);
     void SendFile(const std::string& name, const void* data, size_t size);
     void SendLog(LoggingSeverity severity, const std::string& message);
     void SendProgress(uint64_t frame, uint64_t block);
     void SendDone(bool success); // Also calls Disconnect().
+
+    // Bound the queue to limit bytes of queued and in-flight data, blocking SendFile callers until the sender thread
+    // drains below it; 0 restores an unbounded queue. Only file payloads wait: log and progress messages are small,
+    // and blocking them would stall whichever thread is inside a log call. A single payload larger than the limit is
+    // still sent, once the channel has gone idle. Set before replay starts streaming.
+    void SetSendQueueLimit(size_t limit) { queue_limit_ = limit; }
+
+    // Log how often, and for how long, file sends stalled waiting on socket backpressure. Call before SendDone so the
+    // summary still reaches the controller.
+    void LogSendQueueStats() const;
 
     // Register (or clear, with nullptr) the process-wide channel. Called once during remote setup and cleared during
     // shutdown, both on the main thread.
@@ -130,7 +146,8 @@ class RemoteChannel
     static void AppendFrame(std::vector<uint8_t>& buffer, const void* data, uint32_t size);
 
     // Queue a pre-framed buffer for the sender thread; drops the buffer when disconnected or after a send failure.
-    void EnqueueFrames(std::vector<uint8_t>&& buffer);
+    // With stall_when_full set, waits for queue space instead of growing the queue past queue_limit_.
+    void EnqueueFrames(std::vector<uint8_t>&& buffer, bool stall_when_full = false);
 
     // Sender thread entry point: sends queued buffers in order until stopped or a send fails.
     void SenderThread();
@@ -151,10 +168,19 @@ class RemoteChannel
 
     std::thread                      sender_thread_;
     std::mutex                       queue_mutex_;
-    std::condition_variable          queue_cv_;
-    std::deque<std::vector<uint8_t>> send_queue_;              // Guarded by queue_mutex_.
+    std::condition_variable          queue_cv_;         // Signals the sender that work arrived, or that it should stop.
+    std::condition_variable          space_cv_;         // Signals blocked senders that the queue has drained.
+    std::deque<std::vector<uint8_t>> send_queue_;       // Guarded by queue_mutex_.
+    size_t                           queue_bytes_{ 0 }; // Queued plus in flight; guarded by queue_mutex_.
+    size_t                           queue_limit_{ kDefaultSendQueueLimit };
     bool                             stop_requested_{ false }; // Guarded by queue_mutex_.
+    bool                             sender_active_{ false };  // Sender thread is running; guarded by queue_mutex_.
     std::atomic<bool>                send_failed_{ false };
+
+    // Backpressure accounting for LogSendQueueStats().
+    std::atomic<size_t>   stat_queue_peak_{ 0 }; // Updated under queue_mutex_, read from anywhere.
+    std::atomic<uint64_t> stat_stalls_{ 0 };
+    std::atomic<uint64_t> stat_stall_ns_{ 0 };
 
     std::thread             receiver_thread_;
     std::mutex              trigger_mutex_;
