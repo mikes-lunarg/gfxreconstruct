@@ -62,11 +62,17 @@ Every frame is a length-prefixed byte string:
 - Binary file payloads are sent as a JSON `"file"` metadata frame **immediately
   followed** by a separate raw binary frame (no base64). After a `"file"`
   message the receiver treats the next frame as raw bytes.
+- When [stream compression](#stream-compression) is negotiated, these frames are
+  the uncompressed content of a single zstd stream. Framing is unchanged.
 
 ## Startup Handshake
 
 ```
-replay     → controller:  {"type":"hello","version":"1"}
+replay     → controller:  {"type":"hello","version":"1","role":"replay",
+                           "features":{"compress_input":true,
+                                       "compress_output":true}}
+controller → replay:      {"type":"welcome",
+                           "features":{"compress_output":true}}
 controller → replay:      {"type":"file","name":"dr.json","size":812}   (0..N, optional)
                           <812 raw bytes — separate binary frame, no encoding>
 controller → replay:      {"type":"settings","options":{
@@ -76,7 +82,14 @@ replay     → controller:  {"type":"ready"}
 [replay runs]
 ```
 
-- Replay sends `hello` first regardless of which side dialed.
+- Replay sends `hello` first regardless of which side dialed. `role` names the
+  tool that is speaking — `replay` today, `capture` planned — and selects which
+  settings schema applies. A controller that does not support the role rejects
+  the connection.
+- `welcome` answers `hello` and closes feature negotiation. It must be the
+  controller's first message; replay fails the handshake on anything else. A
+  controller rejects a connection (unsupported role or version) by disconnecting
+  instead of sending `welcome`. See [Stream Compression](#stream-compression).
 - `options` is a set of replay settings, from which replay rebuilds its
   `ArgumentParser`. It completely replaces the traditional command-line
   arguments. See [Settings Keys](#settings-keys).
@@ -87,11 +100,82 @@ replay     → controller:  {"type":"ready"}
 - A 5-second receive timeout applies during the handshake, and is cleared once
   the handshake succeeds.
 
+## Stream Compression
+
+Either direction may carry a compressed stream, negotiated during the handshake.
+When enabled, the length-prefixed frames described above are the uncompressed
+content of a single zstd stream.
+
+### Direction naming
+
+`compress_input` and `compress_output` are always from the tool's perspective —
+the peer that sends `hello` — regardless of which end sent the message they
+appear in.
+
+| Key | Direction | Carries |
+|---|---|---|
+| `compress_output` | tool → controller | dumped files, screenshots, logs, progress |
+| `compress_input` | controller → tool | settings, input files, triggers |
+
+### Negotiation
+
+`features` is a map of feature name to value. In `hello` the value states the
+domain the tool accepts; in `welcome` it states the selection. For a boolean
+option the domain is `true`, meaning the tool supports it.
+
+**A key absent from `features` is off**: unsupported in `hello`, not enabled in
+`welcome`. A tool advertises only the options it can perform, and the controller
+selects only from the keys the tool advertised. In `welcome`, `features` itself
+is optional — the message alone acknowledges `hello`, and a controller selecting
+nothing omits the map.
+
+Replay advertises neither compression key when built without
+`GFXRECON_ENABLE_ZSTD_COMPRESSION`. A controller without the `zstandard` Python
+package selects neither key; `--no-compress` suppresses them the same way.
+
+Compression is zstd. It is not otherwise negotiable — see
+[zstd parameters](#zstd-parameters).
+
+### When it starts
+
+Each direction switches immediately after `welcome`: the controller begins
+decoding the tool's stream once it has sent `welcome`, and the tool begins
+encoding once it has received it. `hello` and `welcome` are always uncompressed.
+Everything after — `ready`, input files, and every message for the rest of the
+run — uses the negotiated encoding.
+
+Between `hello` and receiving `welcome` the tool sends nothing: the controller
+arms its decoder the moment it sends `welcome`, so a frame the tool emitted
+before receiving it would arrive mid-switch and desync the stream.
+
+### zstd parameters
+
+Fixed, not negotiated. Both ends log them at startup.
+
+| Parameter | Value |
+|---|---|
+| Compression level | 1 |
+| Window log | 25 (32 MiB) |
+| Long-distance matching | enabled |
+
+The stream is flushed (`ZSTD_e_flush`) after every message; no message is left
+buffered in the compressor waiting for a block to fill.
+
+The window is not negotiated. Each zstd frame header declares its own window and
+the receiver adapts, bounded by zstd's default 2^27 decoder limit. The encoder
+may change the window mid-run by ending the frame and starting a new one.
+
+### Interaction with per-file compression
+
+When `compress_output` is enabled, dump-resources per-file compression
+(`BinaryFileCompressionType`) must be `none`.
+
 ## Message Schema
 
 ### Controller → replay
 
 ```json
+{"type":"welcome","features":{"compress_output":true}}
 {"type":"file","name":"dr.json","size":812}   // handshake only, before "settings"
 <812 raw bytes — separate binary frame, no encoding>
 {"type":"settings","options":{"<key>":"<value>", ...}}
@@ -101,6 +185,7 @@ replay     → controller:  {"type":"ready"}
 ### Replay → controller
 
 ```json
+{"type":"hello","version":"1","role":"replay","features":{...}}
 {"type":"log","level":"info","message":"..."}
 {"type":"progress","frame":42,"block":1234}
 {"type":"operation_progress","operation":"dump_resources","current":37,"total":90}
@@ -110,6 +195,25 @@ replay     → controller:  {"type":"ready"}
 ```
 
 `done` is the final message; replay disconnects after sending it.
+
+## Compatibility
+
+Rules for how the protocol evolves and what a peer does with what it does not
+recognize:
+
+- **Unknown JSON fields are ignored.** Adding a field to an existing message is
+  always a compatible change.
+- **Unknown message types during the handshake are fatal.** The handshake is
+  strict lockstep; a new handshake message needs a `features` key so
+  it is only sent to a peer that advertised it.
+- **Unknown message types after the handshake are warned about and ignored**, in
+  both directions. Adding a post-handshake message type is a compatible change,
+  but the sender cannot assume it was acted on.
+- **Unknown trigger actions are warned about and ignored.**
+- **`version` names the handshake structure itself** — the framing and the
+  hello/welcome/settings/ready sequence. New behavior rides `features` keys and
+  new message types, never version bumps. A controller that does not recognize the
+  version rejects the connection.
 
 ## Settings Keys
 
@@ -257,6 +361,21 @@ python scripts/replay_controller.py --connect localhost:9000 --adb -- --dump-res
 
 Only the capture file has to exist on the device; `dr.json` is read from the
 controller's working directory and pushed.
+
+## Security
+
+The protocol is unauthenticated and unencrypted, intended for trusted links:
+loopback, adb-forwarded sockets, or an ssh tunnel. Do not expose either end on
+an untrusted network.
+
+- `--remote-listen` accepts the first connection from anyone who can reach the
+  address; prefer loopback or adb/ssh forwarding over binding a routable
+  interface.
+- A connected controller fully drives replay: it chooses the settings, pushes
+  input files, and receives every streamed output. Connecting is equivalent to
+  running replay as that user.
+- The reference controller anchors received files under `--output-dir` and
+  strips path components that would escape it.
 
 ## CLI Reference
 

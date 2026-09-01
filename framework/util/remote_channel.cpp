@@ -44,6 +44,10 @@
 #include "util/input_file_store.h"
 #include "util/logging.h"
 
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+#include "zstd.h"
+#endif
+
 #include <algorithm>
 #include <cerrno>
 #include <cinttypes>
@@ -65,6 +69,13 @@ namespace
 constexpr int kAcceptTimeoutSeconds = 30;
 
 constexpr int kHandshakeTimeoutSeconds = 5;
+
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+// Not arbitrary: the window must span more than one dump's payload for cross-draw matching, and at level 1
+// long-distance matching is what finds those matches. See remote_protocol.md "zstd parameters".
+constexpr int kZstdCompressionLevel = 1;
+constexpr int kZstdWindowLog        = 25;
+#endif
 
 // The rest of this block adapts Winsock and BSD sockets to the one interface used by the logic below.
 #if defined(_WIN32)
@@ -689,6 +700,23 @@ void RemoteChannel::Disconnect()
         CloseSocket(listen_fd_);
     }
 
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+    // Safe to free now that the sender and receiver threads, the only users, have been joined.
+    if (zstd_cstream_ != nullptr)
+    {
+        ZSTD_freeCStream(zstd_cstream_);
+        zstd_cstream_ = nullptr;
+    }
+    if (zstd_dstream_ != nullptr)
+    {
+        ZSTD_freeDStream(zstd_dstream_);
+        zstd_dstream_ = nullptr;
+    }
+#endif
+    recv_buffer_pos_  = 0;
+    recv_buffer_size_ = 0;
+    compress_output_  = false;
+
     send_queue_.clear();
     trigger_queue_.clear();
     queue_bytes_    = 0;
@@ -704,20 +732,30 @@ bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
         return false;
     }
 
-    SendJson({ { "type", "hello" }, { "version", "1" } });
+    // Advertise only the features this build can perform; the controller selects from these keys in its
+    // "welcome" answer, or declines them by omission.
+    nlohmann::json features = nlohmann::json::object();
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+    features["compress_input"]  = true;
+    features["compress_output"] = true;
+#endif
+    SendJson({ { "type", "hello" }, { "version", "1" }, { "role", "replay" }, { "features", features } });
 
     // Bound the handshake receive so a missing/unresponsive controller does not hang startup.
     // A timed-out Winsock call leaves the socket indeterminate, so every failure below has to stay fatal.
     SetRecvTimeout(fd_, kHandshakeTimeoutSeconds);
 
-    // "settings" ends the controller's opening turn; any "file" messages precede it. Reading until it arrives means a
-    // controller that pushes no files sends nothing extra, so no count or terminator is needed.
+    // "welcome" must be the controller's first message: it closes feature negotiation, and the encoding it selects
+    // covers every later frame. "settings" then ends the controller's opening turn; any "file" messages precede it.
+    // Reading until it arrives means a controller that pushes no files sends nothing extra, so no count or terminator
+    // is needed.
+    bool got_welcome = false;
     for (;;)
     {
         std::vector<uint8_t> frame;
         if (!RecvFrame(frame))
         {
-            GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for settings");
+            GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for %s", got_welcome ? "settings" : "welcome");
             return false;
         }
 
@@ -729,6 +767,21 @@ bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
         }
 
         const std::string type = msg["type"].get<std::string>();
+        if (!got_welcome)
+        {
+            if (type != "welcome")
+            {
+                GFXRECON_LOG_ERROR("Remote channel: expected welcome, received \"%s\" message", type.c_str());
+                return false;
+            }
+            if (!ProcessWelcome(msg))
+            {
+                return false;
+            }
+            got_welcome = true;
+            continue;
+        }
+
         if (type == "settings")
         {
             // Not value(), which throws on a type mismatch, as in ReceiveInputFile() below.
@@ -778,6 +831,70 @@ bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
     receiver_thread_ = std::thread(&RemoteChannel::ReceiverThread, this);
 
     return true;
+}
+
+bool RemoteChannel::ProcessWelcome(const nlohmann::json& msg)
+{
+    const auto features_entry = msg.find("features");
+    if (features_entry == msg.end())
+    {
+        return true; // Nothing selected.
+    }
+    if (!features_entry->is_object())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: welcome features is not an object");
+        return false;
+    }
+
+    bool compress_input  = false;
+    bool compress_output = false;
+    for (const auto& option : features_entry->items())
+    {
+        const bool known = (option.key() == "compress_input") || (option.key() == "compress_output");
+        if (!known || !option.value().is_boolean())
+        {
+            GFXRECON_LOG_ERROR("Remote channel: controller selected unrecognized feature \"%s\"", option.key().c_str());
+            return false;
+        }
+        (option.key() == "compress_input" ? compress_input : compress_output) = option.value().get<bool>();
+    }
+
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+    if (compress_input)
+    {
+        // Everything the controller sends from here on is one zstd stream; frames after welcome decode through it.
+        zstd_dstream_ = ZSTD_createDStream();
+        if (zstd_dstream_ == nullptr)
+        {
+            GFXRECON_LOG_ERROR("Remote channel: failed to create stream decompressor");
+            return false;
+        }
+        recv_buffer_.resize(ZSTD_DStreamInSize());
+        GFXRECON_LOG_INFO("Remote channel: inbound stream compression enabled (zstd)");
+    }
+    if (compress_output)
+    {
+        // The switch is queued so it happens in stream order: the uncompressed hello may still be waiting to send.
+        // The sender thread creates the compressor when it dequeues the marker.
+        compress_output_ = true;
+        SendItem marker;
+        marker.start_compression = true;
+        EnqueueItem(std::move(marker));
+        GFXRECON_LOG_INFO("Remote channel: outbound stream compression enabled (zstd level %d, window log %d, "
+                          "long-distance matching)",
+                          kZstdCompressionLevel,
+                          kZstdWindowLog);
+    }
+    return true;
+#else
+    if (compress_input || compress_output)
+    {
+        // The controller may select only from the options hello advertised, which excluded these.
+        GFXRECON_LOG_ERROR("Remote channel: controller selected compression, which this build does not support");
+        return false;
+    }
+    return true;
+#endif
 }
 
 bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
@@ -860,11 +977,11 @@ void RemoteChannel::SendJson(const nlohmann::json& msg)
         return;
     }
 
-    std::string          payload = msg.dump();
-    std::vector<uint8_t> buffer;
-    buffer.reserve(sizeof(uint32_t) + payload.size());
-    AppendFrame(buffer, payload.data(), static_cast<uint32_t>(payload.size()));
-    EnqueueFrames(std::move(buffer));
+    std::string payload = msg.dump();
+    SendItem    item;
+    item.frames.reserve(sizeof(uint32_t) + payload.size());
+    AppendFrame(item.frames, payload.data(), static_cast<uint32_t>(payload.size()));
+    EnqueueItem(std::move(item));
 }
 
 void RemoteChannel::SendFile(const std::string& name, const void* data, size_t size)
@@ -877,12 +994,12 @@ void RemoteChannel::SendFile(const std::string& name, const void* data, size_t s
     nlohmann::json header  = { { "type", "file" }, { "name", name }, { "size", size } };
     std::string    payload = header.dump();
 
-    // Queue both frames as one buffer so the JSON header and binary data are never interleaved with other senders.
-    std::vector<uint8_t> buffer;
-    buffer.reserve((2 * sizeof(uint32_t)) + payload.size() + size);
-    AppendFrame(buffer, payload.data(), static_cast<uint32_t>(payload.size()));
-    AppendFrame(buffer, data, static_cast<uint32_t>(size));
-    EnqueueFrames(std::move(buffer), true);
+    // Queue both frames as one item so the JSON header and binary data are never interleaved with other senders.
+    SendItem item;
+    item.frames.reserve((2 * sizeof(uint32_t)) + payload.size() + size);
+    AppendFrame(item.frames, payload.data(), static_cast<uint32_t>(payload.size()));
+    AppendFrame(item.frames, data, static_cast<uint32_t>(size));
+    EnqueueItem(std::move(item), true);
 }
 
 void RemoteChannel::LogSendQueueStats() const
@@ -934,7 +1051,7 @@ void RemoteChannel::AppendFrame(std::vector<uint8_t>& buffer, const void* data, 
     buffer.insert(buffer.end(), data_bytes, data_bytes + size);
 }
 
-void RemoteChannel::EnqueueFrames(std::vector<uint8_t>&& buffer, bool stall_when_full)
+void RemoteChannel::EnqueueItem(SendItem&& item, bool stall_when_full)
 {
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
@@ -943,7 +1060,7 @@ void RemoteChannel::EnqueueFrames(std::vector<uint8_t>&& buffer, bool stall_when
         {
             // An idle channel always accepts, so a payload larger than the whole limit goes out on its own rather
             // than waiting for space that could never exist.
-            const size_t size     = buffer.size();
+            const size_t size     = item.frames.size();
             const auto   has_room = [this, size] {
                 return !sender_active_ || stop_requested_ || send_failed_ || (queue_bytes_ == 0) ||
                        ((queue_bytes_ + size) <= queue_limit_);
@@ -965,9 +1082,9 @@ void RemoteChannel::EnqueueFrames(std::vector<uint8_t>&& buffer, bool stall_when
             return;
         }
 
-        queue_bytes_ += buffer.size();
+        queue_bytes_ += item.frames.size();
         stat_queue_peak_ = std::max(stat_queue_peak_.load(), queue_bytes_);
-        send_queue_.push_back(std::move(buffer));
+        send_queue_.push_back(std::move(item));
     }
     queue_cv_.notify_one();
 }
@@ -1011,7 +1128,7 @@ void RemoteChannel::SenderThread()
 {
     for (;;)
     {
-        std::vector<uint8_t> buffer;
+        SendItem item;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             queue_cv_.wait(lock, [this] { return stop_requested_ || !send_queue_.empty(); });
@@ -1019,23 +1136,28 @@ void RemoteChannel::SenderThread()
             {
                 return; // Stop requested and queue drained.
             }
-            buffer = std::move(send_queue_.front());
+            item = std::move(send_queue_.front());
             send_queue_.pop_front();
         }
 
-        // queue_bytes_ still counts this buffer, so a blocked sender waits for the socket to take it, not merely for
-        // it to leave the queue.
-        const bool sent = SendAll(buffer.data(), buffer.size());
+        // queue_bytes_ still counts this item, so a blocked sender waits for the socket to take it, not merely for it
+        // to leave the queue.
+        bool sent = !item.start_compression || StartCompression();
+        if (sent && !item.frames.empty())
+        {
+            sent = SendFrames(item.frames);
+        }
 
         {
             const std::lock_guard<std::mutex> lock(queue_mutex_);
             if (sent)
             {
-                queue_bytes_ -= buffer.size();
+                queue_bytes_ -= item.frames.size();
             }
             else
             {
-                // The controller went away; drop queued messages and report the channel as disconnected.
+                // The controller went away (or the compressor failed, which would desync its decoder); drop queued
+                // messages and report the channel as disconnected.
                 send_failed_ = true;
                 send_queue_.clear();
                 queue_bytes_ = 0;
@@ -1048,6 +1170,66 @@ void RemoteChannel::SenderThread()
             return;
         }
     }
+}
+
+bool RemoteChannel::StartCompression()
+{
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+    zstd_cstream_ = ZSTD_createCStream();
+    if (zstd_cstream_ == nullptr)
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed to create stream compressor");
+        return false;
+    }
+
+    const size_t results[] = {
+        ZSTD_CCtx_setParameter(zstd_cstream_, ZSTD_c_compressionLevel, kZstdCompressionLevel),
+        ZSTD_CCtx_setParameter(zstd_cstream_, ZSTD_c_windowLog, kZstdWindowLog),
+        ZSTD_CCtx_setParameter(zstd_cstream_, ZSTD_c_enableLongDistanceMatching, 1),
+    };
+    for (size_t result : results)
+    {
+        if (ZSTD_isError(result))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: failed to configure stream compressor: %s", ZSTD_getErrorName(result));
+            return false;
+        }
+    }
+
+    compress_buffer_.resize(ZSTD_CStreamOutSize());
+    return true;
+#else
+    return false; // Unreachable: without zstd the start_compression marker is never queued.
+#endif
+}
+
+bool RemoteChannel::SendFrames(const std::vector<uint8_t>& frames)
+{
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+    if (zstd_cstream_ != nullptr)
+    {
+        // One queued item is one message, so flushing here gives the per-message flush the protocol requires:
+        // nothing is left in the compressor waiting for a block to fill.
+        ZSTD_inBuffer input{ frames.data(), frames.size(), 0 };
+        size_t        remaining = 0;
+        do
+        {
+            ZSTD_outBuffer output{ compress_buffer_.data(), compress_buffer_.size(), 0 };
+            remaining = ZSTD_compressStream2(zstd_cstream_, &output, &input, ZSTD_e_flush);
+            if (ZSTD_isError(remaining))
+            {
+                GFXRECON_LOG_ERROR("Remote channel: stream compression failed: %s", ZSTD_getErrorName(remaining));
+                return false;
+            }
+            if ((output.pos > 0) && !SendAll(compress_buffer_.data(), output.pos))
+            {
+                return false;
+            }
+        } while ((input.pos < input.size) || (remaining > 0));
+        return true;
+    }
+#endif
+    return SendAll(frames.data(), frames.size());
 }
 
 bool RemoteChannel::RecvFrame(std::vector<uint8_t>& out)
@@ -1089,6 +1271,11 @@ bool RemoteChannel::SendAll(const void* buf, size_t size)
 
 bool RemoteChannel::RecvExact(void* buf, size_t size)
 {
+    if (zstd_dstream_ != nullptr)
+    {
+        return RecvDecompressed(buf, size);
+    }
+
     uint8_t* ptr       = static_cast<uint8_t*>(buf);
     size_t   remaining = size;
     while (remaining > 0)
@@ -1108,6 +1295,50 @@ bool RemoteChannel::RecvExact(void* buf, size_t size)
     return true;
 }
 
+bool RemoteChannel::RecvDecompressed(void* buf, size_t size)
+{
+#if defined(GFXRECON_ENABLE_ZSTD_COMPRESSION)
+    ZSTD_outBuffer output{ buf, size, 0 };
+    while (output.pos < output.size)
+    {
+        // Decompress before touching the socket: the decoder decodes whole blocks internally, so it can hold
+        // flushable bytes after the compressed input is fully consumed. Reading the socket then would block on
+        // data the peer never needs to send.
+        ZSTD_inBuffer input{ recv_buffer_.data(), recv_buffer_size_, recv_buffer_pos_ };
+        const size_t  output_pos_before = output.pos;
+        const size_t  result            = ZSTD_decompressStream(zstd_dstream_, &output, &input);
+        if (ZSTD_isError(result))
+        {
+            GFXRECON_LOG_ERROR("Remote channel: stream decompression failed: %s", ZSTD_getErrorName(result));
+            return false;
+        }
+        const bool progressed = (output.pos > output_pos_before) || (input.pos > recv_buffer_pos_);
+        recv_buffer_pos_      = input.pos;
+        if (progressed)
+        {
+            continue;
+        }
+
+        int64_t received = SocketRecv(fd_, recv_buffer_.data(), recv_buffer_.size());
+        if (received <= 0)
+        {
+            if (received < 0 && SocketErrorIsInterrupt())
+            {
+                continue;
+            }
+            return false;
+        }
+        recv_buffer_pos_  = 0;
+        recv_buffer_size_ = static_cast<size_t>(received);
+    }
+    return true;
+#else
+    GFXRECON_UNREFERENCED_PARAMETER(buf);
+    GFXRECON_UNREFERENCED_PARAMETER(size);
+    return false; // Unreachable: without zstd no decompressor is ever created.
+#endif
+}
+
 RemoteChannel* RemoteChannel::active_channel_ = nullptr;
 
 void RemoteChannel::SetActiveChannel(RemoteChannel* channel)
@@ -1120,6 +1351,12 @@ bool RemoteChannel::IsActive()
 {
     RemoteChannel* channel = active_channel_;
     return channel != nullptr && channel->IsConnected();
+}
+
+bool RemoteChannel::IsActiveOutputCompressed()
+{
+    RemoteChannel* channel = active_channel_;
+    return channel != nullptr && channel->IsConnected() && channel->compress_output_;
 }
 
 void RemoteChannel::SendActiveFile(const std::string& name, const void* data, size_t size)

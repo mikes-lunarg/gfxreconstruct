@@ -27,6 +27,7 @@
 #include "replay_settings.h"
 #include "util/json_util.h"
 #include "util/logging.h"
+#include "util/remote_channel.h"
 #include "decode/vulkan_pre_process_consumer.h"
 #include "util/options.h"
 #include "util/platform.h"
@@ -307,6 +308,17 @@ static void ExtractVulkanDumpResourcesParameters(const nlohmann::ordered_json   
                 {
                     GFXRECON_LOG_WARNING("Unrecognized compression method \"%s\" in input json.",
                                          compression_type_str.c_str());
+                }
+
+                // Compressing per file inside an already-compressed stream defeats the stream's cross-draw matching.
+                if ((vulkan_replay_options.dump_resources_binary_file_compression_type !=
+                     format::CompressionType::kNone) &&
+                    util::RemoteChannel::IsActiveOutputCompressed())
+                {
+                    GFXRECON_LOG_WARNING("Ignoring %s from input json: the remote channel compresses its entire "
+                                         "outbound stream",
+                                         gfxrecon::decode::kVDROptionBinaryFileCompressionType);
+                    vulkan_replay_options.dump_resources_binary_file_compression_type = format::CompressionType::kNone;
                 }
             }
             else if (!util::platform::StringCompareNoCase(
