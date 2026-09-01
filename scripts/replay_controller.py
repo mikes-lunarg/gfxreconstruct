@@ -35,6 +35,11 @@ Wire format: each frame is a little-endian uint32 length prefix followed by
 that many payload bytes. Structured messages are JSON. A binary file payload is
 a JSON "file" frame immediately followed by a raw binary frame.
 
+When the zstandard package is installed, each direction of the socket is
+negotiated into a single zstd stream carrying those frames (the framing itself
+is unchanged); --no-compress declines it. The similarly-named zstd package
+cannot decode a stream incrementally and is not a substitute.
+
 Replay settings travel as key/value pairs, not as a command line: a key is a
 replay option with its leading dashes stripped and '-' replaced by '_', and
 every value is a string. Write them after -- as key=value, or as a bare key for
@@ -74,6 +79,16 @@ import subprocess
 import sys
 import threading
 import time
+
+try:
+    import zstandard
+except ImportError:
+    zstandard = None
+
+# Mirrors RemoteChannel::StartCompression. The window must span more than one dump's payload for cross-draw
+# matching, and at level 1 long-distance matching is what finds those matches; see docs/remote_protocol.md.
+ZSTD_LEVEL = 1
+ZSTD_WINDOW_LOG = 25
 
 TRIGGER_COMMANDS = {
     'p': 'pause',
@@ -190,20 +205,52 @@ def collect_input_files(options):
 
 recv_rate = 0.0  # --slow-recv byte rate; 0 leaves reads unthrottled
 recv_sleep_seconds = 0.0  # time this side spent deliberately not reading
+wire_bytes = 0  # bytes read off the socket, before any decompression
+stream_bytes = 0  # framed bytes handed to the session, after any decompression
 
 
-def throttle_recv(count):
-    '''Sleep long enough that reads average recv_rate bytes per second.
+def note_recv(count):
+    '''Record count bytes taken off the socket, and pace reads when --slow-recv is set.
+
+    Every socket read funnels through here, so wire_bytes is the transmitted total no matter which direction
+    dialed or whether the stream is compressed.
 
     Sleeping after the read rather than before it is the point: the kernel keeps filling the receive buffer while
     we are idle, so once that buffer is full the stall propagates back to replay as a blocked send.
     '''
-    global recv_sleep_seconds
+    global recv_sleep_seconds, wire_bytes
+    wire_bytes += count
     if recv_rate <= 0:
         return
     delay = count / recv_rate
     recv_sleep_seconds += delay
     time.sleep(delay)
+
+
+def human_bytes(count):
+    '''Format a byte count in the largest unit that keeps it readable.
+
+    >>> [human_bytes(n) for n in (512, 2048, 5 << 20, 3 << 30)]
+    ['512 B', '2.0 KiB', '5.0 MiB', '3.00 GiB']
+    '''
+    for unit, scale, digits in (('GiB', 1 << 30, 2), ('MiB', 1 << 20, 1),
+                                ('KiB', 1 << 10, 1)):
+        if count >= scale:
+            return f'{count / scale:.{digits}f} {unit}'
+    return f'{count} B'
+
+
+def print_wire_summary():
+    '''Report transmitted bytes, and what they expanded to once decoded.'''
+    if wire_bytes == 0:
+        return
+    parts = [f'{human_bytes(wire_bytes)} on the wire']
+    if stream_bytes != wire_bytes:
+        parts.append(f'{human_bytes(stream_bytes)} decoded '
+                     f'({stream_bytes / wire_bytes:.2f}x)')
+    if recv_rate > 0:
+        parts.append(f'{recv_sleep_seconds:.1f}s throttled')
+    print(f"--- received: {', '.join(parts)} ---")
 
 
 def apply_recv_throttle(conn, mib_per_second):
@@ -226,6 +273,7 @@ def apply_recv_throttle(conn, mib_per_second):
 
 def recv_exact(conn, length):
     '''Read exactly length bytes, or return None if the peer closes early.'''
+    global stream_bytes
     chunks = []
     remaining = length
     while remaining > 0:
@@ -234,7 +282,8 @@ def recv_exact(conn, length):
             return None
         chunks.append(chunk)
         remaining -= len(chunk)
-        throttle_recv(len(chunk))
+        note_recv(len(chunk))
+    stream_bytes += length  # Plaintext here, so these bytes are both transmitted and decoded.
     return b''.join(chunks)
 
 
@@ -257,7 +306,100 @@ def send_json(conn, obj):
     send_frame(conn, json.dumps(obj).encode('utf-8'))
 
 
-def send_command(conn, line):
+class Channel:
+    '''Framed connection over a socket; either direction may become a zstd stream after negotiation.
+
+    Compression sits below the framing: enable_send_compression() and enable_recv_compression() change only
+    how frame bytes reach and leave the socket, so callers keep sending and receiving whole frames.
+    '''
+
+    def __init__(self, conn):
+        self.conn = conn
+        self._compressor = None
+        self._decompressor = None
+        self._decoded = bytearray(
+        )  # Decompressed bytes received but not yet consumed.
+
+    def enable_send_compression(self):
+        params = zstandard.ZstdCompressionParameters.from_level(
+            ZSTD_LEVEL, window_log=ZSTD_WINDOW_LOG, enable_ldm=True)
+        self._compressor = zstandard.ZstdCompressor(
+            compression_params=params).compressobj()
+
+    def enable_recv_compression(self):
+        self._decompressor = zstandard.ZstdDecompressor().decompressobj()
+
+    def has_buffered_data(self):
+        '''True when decoded bytes are waiting, so the socket may be silent while a frame is readable.'''
+        return bool(self._decoded)
+
+    def send_frame(self, payload):
+        data = struct.pack('<I', len(payload)) + payload
+        if self._compressor is not None:
+            # Flush per message so a trigger never sits in the compressor waiting for a block to fill.
+            data = self._compressor.compress(data) + self._compressor.flush(
+                zstandard.COMPRESSOBJ_FLUSH_BLOCK)
+        self.conn.sendall(data)
+
+    def send_json(self, obj):
+        self.send_frame(json.dumps(obj).encode('utf-8'))
+
+    def recv_exact(self, length):
+        global stream_bytes
+        if self._decompressor is None:
+            return recv_exact(self.conn, length)  # Accounts for itself.
+        while len(self._decoded) < length:
+            chunk = self.conn.recv(65536)
+            if not chunk:
+                return None
+            self._decoded += self._decompressor.decompress(chunk)
+            note_recv(len(chunk))
+        result = bytes(self._decoded[:length])
+        del self._decoded[:length]
+        stream_bytes += len(result)
+        return result
+
+    def recv_frame(self):
+        header = self.recv_exact(4)
+        if header is None:
+            return None
+        (length, ) = struct.unpack('<I', header)
+        if length == 0:
+            return b''
+        return self.recv_exact(length)
+
+
+def negotiate_features(chan, hello, allow_compression):
+    '''Answer hello with welcome, selecting from the advertised features.
+
+    Selects stream compression for each direction the replay build advertised, when the zstandard package
+    is available and --no-compress was not given. Each direction switches immediately after welcome.
+    '''
+    advertised = hello.get('features') or {}
+    selected = {}
+    if allow_compression and zstandard is not None:
+        for key in ('compress_output', 'compress_input'):
+            if advertised.get(key) is True:
+                selected[key] = True
+    welcome = {'type': 'welcome'}
+    if selected:
+        welcome['features'] = selected
+    chan.send_json(welcome)
+
+    if selected.get('compress_output'):
+        chan.enable_recv_compression()
+    if selected.get('compress_input'):
+        chan.enable_send_compression()
+    if selected:
+        print(
+            f"Stream compression enabled ({' and '.join(sorted(selected))}): "
+            f'zstd level {ZSTD_LEVEL}, window log {ZSTD_WINDOW_LOG}, '
+            'long-distance matching')
+    elif allow_compression and zstandard is None and advertised:
+        print('zstandard package not installed; streams stay uncompressed')
+
+
+def send_command(chan, line):
     '''Send the trigger matching one line of command input.'''
     line = line.strip().lower()
     if not line:
@@ -266,7 +408,7 @@ def send_command(conn, line):
     if action is None:
         print(f"Unknown command '{line}' (p=pause, r=resume, s=step, q=stop)")
         return
-    send_json(conn, {'type': 'trigger', 'action': action})
+    chan.send_json({'type': 'trigger', 'action': action})
 
 
 def start_command_reader():
@@ -281,7 +423,12 @@ def start_command_reader():
     return commands
 
 
-def handle_session(conn, options, output_dir, hello=None, input_files=()):
+def handle_session(conn,
+                   options,
+                   output_dir,
+                   hello=None,
+                   input_files=(),
+                   no_compress=False):
     '''Run the handshake and process messages until replay reports done.
 
     options is the settings dict sent to replay.
@@ -291,7 +438,8 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
 
     input_files is a list of (name, contents) pairs pushed before the settings message.
     '''
-    # Handshake: replay greets us, we reply with settings, replay acknowledges.
+    # Handshake: replay greets us, we answer with welcome, input files, and settings; replay acknowledges.
+    # hello and welcome are always uncompressed; the negotiated encoding covers everything after.
     if hello is None:
         hello = recv_frame(conn)
     if hello is None:
@@ -301,20 +449,30 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
     if hello.get('type') != 'hello':
         print(f'Unexpected first message: {hello}', file=sys.stderr)
         return False
+    if hello.get('role') != 'replay':
+        print(f"Unsupported peer role '{hello.get('role')}'", file=sys.stderr)
+        return False
+    if hello.get('version') != '1':
+        print(f"Unsupported protocol version '{hello.get('version')}'",
+              file=sys.stderr)
+        return False
     print(f"Connected to replay (protocol version {hello.get('version')})")
+
+    chan = Channel(conn)
+    negotiate_features(chan, hello, not no_compress)
 
     # Input files must precede the settings message, which ends our opening turn.
     for name, blob in input_files:
-        send_json(conn, {'type': 'file', 'name': name, 'size': len(blob)})
-        send_frame(conn, blob)
+        chan.send_json({'type': 'file', 'name': name, 'size': len(blob)})
+        chan.send_frame(blob)
         print(f'Sent input file: {name} ({len(blob)} bytes)')
 
-    send_json(conn, {'type': 'settings', 'options': options})
+    chan.send_json({'type': 'settings', 'options': options})
     print('Sent settings:')
     for key in sorted(options):
         print(f'  {key}={options[key]}')
 
-    ready = recv_frame(conn)
+    ready = chan.recv_frame()
     if ready is None or json.loads(ready).get('type') != 'ready':
         print('Replay did not acknowledge settings', file=sys.stderr)
         return False
@@ -338,11 +496,12 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
             # Windows select() only supports sockets, so poll the socket and drain queued stdin commands.
             readable, _, _ = select.select([conn], [], [], 0.1)
             while not commands.empty():
-                send_command(conn, commands.get_nowait())
-            if conn not in readable:
+                send_command(chan, commands.get_nowait())
+            # One socket read can decode to several frames, so a silent socket is not an empty channel.
+            if conn not in readable and not chan.has_buffered_data():
                 continue
 
-        frame = recv_frame(conn)
+        frame = chan.recv_frame()
         if frame is None:
             print('Replay disconnected')
             break
@@ -379,7 +538,7 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
             # A "file" message is always followed by a raw binary frame.
             name = msg.get('name', 'unnamed')
             expected = msg.get('size', 0)
-            blob = recv_frame(conn)
+            blob = chan.recv_frame()
             blob = blob if blob is not None else b''
             save_file(output_dir, name, blob, expected)
         elif msg_type == 'done':
@@ -391,9 +550,7 @@ def handle_session(conn, options, output_dir, hello=None, input_files=()):
 
         prev_msg_type = msg_type
 
-    if recv_rate > 0:
-        print(f'--- recv throttle: {recv_rate / (1 << 20):.1f} MiB/s, '
-              f'{recv_sleep_seconds:.1f}s spent not reading ---')
+    print_wire_summary()
 
     return success
 
@@ -482,6 +639,11 @@ rejects any key it does not recognize, naming it in the error.''')
         help=
         'Directory for files streamed back by replay (default: remote_output).'
     )
+    parser.add_argument(
+        '--no-compress',
+        action='store_true',
+        help='Do not enable stream compression, even when replay and the '
+        'zstandard package support it.')
     parser.add_argument(
         '--slow-recv',
         type=float,
@@ -593,7 +755,7 @@ rejects any key it does not recognize, naming it in the error.''')
         apply_recv_throttle(conn, args.slow_recv)
         with conn:
             success = handle_session(conn, options, args.output_dir, hello,
-                                     input_files)
+                                     input_files, args.no_compress)
 
         return 0 if success else 1
 
@@ -660,7 +822,8 @@ rejects any key it does not recognize, naming it in the error.''')
         success = handle_session(conn,
                                  options,
                                  args.output_dir,
-                                 input_files=input_files)
+                                 input_files=input_files,
+                                 no_compress=args.no_compress)
 
     return 0 if success else 1
 
