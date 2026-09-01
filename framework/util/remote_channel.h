@@ -39,6 +39,10 @@
 #include <thread>
 #include <vector>
 
+// zstd context types, forward-declared to keep zstd.h out of this header.
+struct ZSTD_CCtx_s;
+struct ZSTD_DCtx_s;
+
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(util)
 
@@ -70,7 +74,8 @@ constexpr uint32_t kMaxRecvFrameSize = 1024 * 1024;
 //
 // Wire format: each frame is a little-endian uint32_t length prefix followed by that many payload bytes. Structured
 // messages are JSON frames. A binary file payload is sent as a JSON "file" metadata frame immediately followed by a raw
-// binary frame.
+// binary frame. When stream compression is negotiated during the handshake, the frames of a direction are the
+// uncompressed content of a single zstd stream; the framing itself is unchanged. See docs/remote_protocol.md.
 class RemoteChannel
 {
   public:
@@ -130,6 +135,10 @@ class RemoteChannel
     // remote session never falls back to writing on the device.
     static bool IsActive();
 
+    // Returns true when the active channel compresses its outbound stream, making per-file compression of streamed
+    // output redundant (see docs/remote_protocol.md "Interaction with per-file compression").
+    static bool IsActiveOutputCompressed();
+
     // Send data to the active channel as a "file" message; a no-op when no channel is registered or connected. Lets
     // file writers (screenshots, dump-resources) stream their output without threading a channel pointer through the
     // decode layer.
@@ -144,14 +153,22 @@ class RemoteChannel
     static void SendActiveLog(LoggingSeverity severity, const std::string& message);
 
   private:
+    // One sender-thread work item. start_compression makes the sender install the stream compressor before sending
+    // frames, so the switch happens in queue order: the uncompressed "hello" may still be queued when it is set.
+    struct SendItem
+    {
+        std::vector<uint8_t> frames;
+        bool                 start_compression{ false };
+    };
+
     // Append a length-prefixed frame to buffer.
     static void AppendFrame(std::vector<uint8_t>& buffer, const void* data, uint32_t size);
 
-    // Queue a pre-framed buffer for the sender thread; drops the buffer when disconnected or after a send failure.
-    // With stall_when_full set, waits for queue space instead of growing the queue past kSendQueueLimit.
-    void EnqueueFrames(std::vector<uint8_t>&& buffer, bool stall_when_full = false);
+    // Queue an item for the sender thread; drops it when disconnected or after a send failure. With stall_when_full
+    // set, waits for queue space instead of growing the queue past kSendQueueLimit.
+    void EnqueueItem(SendItem&& item, bool stall_when_full = false);
 
-    // Sender thread entry point: sends queued buffers in order until stopped or a send fails.
+    // Sender thread entry point: sends queued items in order until stopped or a send fails.
     void SenderThread();
 
     // Receiver thread entry point: queues incoming control actions until the controller disconnects.
@@ -161,23 +178,47 @@ class RemoteChannel
     // store. Returns false on a malformed transfer, which fails the handshake.
     bool ReceiveInputFile(const nlohmann::json& header);
 
+    // Apply the feature selection from the controller's "welcome" message: rejects features this build did not
+    // advertise and switches each selected direction to a zstd stream.
+    bool ProcessWelcome(const nlohmann::json& msg);
+
+    // Sender-thread half of the compress_output switch: create and configure the stream compressor.
+    bool StartCompression();
+
+    // Send one queued item's frames, through the stream compressor once compress_output is active.
+    bool SendFrames(const std::vector<uint8_t>& frames);
+
     // Take the socket as a parameter so the receiver thread never reads fd_ while Disconnect() changes it.
-    static bool RecvFrame(SocketHandle fd, std::vector<uint8_t>& out, uint32_t max_size = kMaxRecvFrameSize);
-    static bool RecvExact(SocketHandle fd, void* buf, size_t size);
-    bool        SendAll(const void* buf, size_t size);
+    bool RecvFrame(SocketHandle fd, std::vector<uint8_t>& out, uint32_t max_size = kMaxRecvFrameSize);
+    bool RecvExact(SocketHandle fd, void* buf, size_t size);
+    bool SendAll(const void* buf, size_t size);
+
+    // RecvExact through the stream decompressor, used for every receive once compress_input is active.
+    bool RecvDecompressed(SocketHandle fd, void* buf, size_t size);
 
     SocketHandle fd_{ kInvalidSocket };
 
-    std::thread                      sender_thread_;
-    std::mutex                       queue_mutex_;
-    std::condition_variable          queue_cv_;         // Signals the sender that work arrived, or that it should stop.
-    std::condition_variable          space_cv_;         // Signals blocked senders that the queue has drained.
-    std::deque<std::vector<uint8_t>> send_queue_;       // Guarded by queue_mutex_.
-    size_t                           queue_bytes_{ 0 }; // Queued plus in flight; guarded by queue_mutex_.
-    bool                             stop_requested_{ false }; // Guarded by queue_mutex_.
-    bool                             sender_active_{ false };  // Sender thread is running; guarded by queue_mutex_.
-    std::atomic<bool>                send_failed_{ false };
-    std::atomic<bool>                connected_{ false }; // Read by IsConnected() from any thread, unlike fd_.
+    // Stream compression state (see docs/remote_protocol.md "Stream Compression"). The compressor is created and used
+    // only on the sender thread; the decompressor is installed during the handshake and used only by whichever thread
+    // is reading the socket.
+    ZSTD_CCtx_s*         zstd_cstream_{ nullptr };
+    ZSTD_DCtx_s*         zstd_dstream_{ nullptr };
+    std::vector<uint8_t> compress_buffer_; // Sender-thread scratch for compressed output.
+    std::vector<uint8_t> recv_buffer_;     // Compressed bytes from the socket awaiting decompression.
+    size_t               recv_buffer_pos_{ 0 };
+    size_t               recv_buffer_size_{ 0 };
+    std::atomic<bool>    compress_output_{ false };
+
+    std::thread             sender_thread_;
+    std::mutex              queue_mutex_;
+    std::condition_variable queue_cv_;                // Signals the sender that work arrived, or that it should stop.
+    std::condition_variable space_cv_;                // Signals blocked senders that the queue has drained.
+    std::deque<SendItem>    send_queue_;              // Guarded by queue_mutex_.
+    size_t                  queue_bytes_{ 0 };        // Queued plus in flight; guarded by queue_mutex_.
+    bool                    stop_requested_{ false }; // Guarded by queue_mutex_.
+    bool                    sender_active_{ false };  // Sender thread is running; guarded by queue_mutex_.
+    std::atomic<bool>       send_failed_{ false };
+    std::atomic<bool>       connected_{ false }; // Read by IsConnected() from any thread, unlike fd_.
 
     // Backpressure accounting for LogSendQueueStats().
     std::atomic<size_t>   stat_queue_peak_{ 0 }; // Updated under queue_mutex_, read from anywhere.
