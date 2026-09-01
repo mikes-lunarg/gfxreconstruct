@@ -1108,6 +1108,10 @@ instead of to local disk. Some output is not yet streamed and is still written
 by replay itself: `--measurement-file`, `--save-pipeline-cache`, `--log-file`,
 the `--capture` recapture file, and the dump-resources JSON for D3D12 and OpenXR.
 
+When both ends support zstd, the session negotiates stream compression during the
+handshake; the controller requires the Python `zstandard` package and stays
+uncompressed without it.
+
 Replay bounds how much output it will buffer for a slow controller, blocking the
 thread producing files once the bound is reached, so a controller that cannot
 keep up slows replay down rather than growing its memory without limit. A single

@@ -266,7 +266,7 @@ json SettingsMessage()
 
 } // namespace
 
-TEST_CASE("RemoteChannel hello announces the protocol version", "[remote_channel]")
+TEST_CASE("RemoteChannel hello announces role, version and features", "[remote_channel]")
 {
     TestController                     controller;
     util::RemoteChannel                channel;
@@ -278,7 +278,11 @@ TEST_CASE("RemoteChannel hello announces the protocol version", "[remote_channel
     REQUIRE_FALSE(hello.is_discarded());
     CHECK(hello.at("type") == "hello");
     CHECK(hello.at("version") == "1");
+    CHECK(hello.at("role") == "replay"); // Distinguishes a replay peer from the future capture peer.
+    REQUIRE(hello.contains("features"));
+    CHECK(hello.at("features").is_object());
 
+    controller.SendJson({ { "type", "welcome" } });
     controller.SendJson(SettingsMessage());
 
     const json ready = controller.RecvJson();
@@ -296,6 +300,7 @@ TEST_CASE("RemoteChannel handshake accepts input files pushed before settings", 
     ChannelRunner                      runner(channel, controller.Address(), settings);
 
     AcceptAndReadHello(controller);
+    controller.SendJson({ { "type", "welcome" } });
 
     // A "file" header is followed immediately by its raw binary frame; zero files means zero extra frames, which is
     // what keeps the ordering rule free for controllers that push nothing.
@@ -312,6 +317,32 @@ TEST_CASE("RemoteChannel handshake accepts input files pushed before settings", 
 TEST_CASE("RemoteChannel handshake rejects a malformed opening turn", "[remote_channel]")
 {
     // Every case here must fail the handshake rather than degrade silently, so a controller bug surfaces at startup.
+    SECTION("settings arriving before welcome")
+    {
+        TestController                     controller;
+        util::RemoteChannel                channel;
+        std::map<std::string, std::string> settings;
+        ChannelRunner                      runner(channel, controller.Address(), settings);
+
+        AcceptAndReadHello(controller);
+        controller.SendJson(SettingsMessage());
+
+        CHECK_FALSE(runner.Result());
+    }
+
+    SECTION("welcome selecting a feature that hello did not advertise")
+    {
+        TestController                     controller;
+        util::RemoteChannel                channel;
+        std::map<std::string, std::string> settings;
+        ChannelRunner                      runner(channel, controller.Address(), settings);
+
+        AcceptAndReadHello(controller);
+        controller.SendJson({ { "type", "welcome" }, { "features", { { "teleportation", true } } } });
+
+        CHECK_FALSE(runner.Result());
+    }
+
     SECTION("settings carrying a non-string value")
     {
         TestController                     controller;
@@ -320,6 +351,7 @@ TEST_CASE("RemoteChannel handshake rejects a malformed opening turn", "[remote_c
         ChannelRunner                      runner(channel, controller.Address(), settings);
 
         AcceptAndReadHello(controller);
+        controller.SendJson({ { "type", "welcome" } });
         controller.SendJson({ { "type", "settings" }, { "options", { { "loop_count", 3 } } } });
 
         CHECK_FALSE(runner.Result());
@@ -333,6 +365,7 @@ TEST_CASE("RemoteChannel handshake rejects a malformed opening turn", "[remote_c
         ChannelRunner                      runner(channel, controller.Address(), settings);
 
         AcceptAndReadHello(controller);
+        controller.SendJson({ { "type", "welcome" } });
         controller.SendJson({ { "type", "settings" }, { "options", json::object() } });
 
         CHECK_FALSE(runner.Result());
@@ -361,6 +394,7 @@ TEST_CASE("RemoteChannel sends a file as a header frame followed by its payload"
     ChannelRunner                      runner(channel, controller.Address(), settings);
 
     AcceptAndReadHello(controller);
+    controller.SendJson({ { "type", "welcome" } });
     controller.SendJson(SettingsMessage());
     REQUIRE(controller.RecvJson().at("type") == "ready");
     REQUIRE(runner.Result());
@@ -392,6 +426,7 @@ TEST_CASE("RemoteChannel reports progress and completion", "[remote_channel]")
     ChannelRunner                      runner(channel, controller.Address(), settings);
 
     AcceptAndReadHello(controller);
+    controller.SendJson({ { "type", "welcome" } });
     controller.SendJson(SettingsMessage());
     REQUIRE(controller.RecvJson().at("type") == "ready");
     REQUIRE(runner.Result());
@@ -416,6 +451,7 @@ TEST_CASE("RemoteChannel queues trigger actions from the controller", "[remote_c
     ChannelRunner                      runner(channel, controller.Address(), settings);
 
     AcceptAndReadHello(controller);
+    controller.SendJson({ { "type", "welcome" } });
     controller.SendJson(SettingsMessage());
     REQUIRE(controller.RecvJson().at("type") == "ready");
     REQUIRE(runner.Result());
