@@ -34,6 +34,7 @@ to one of these other documents:
     2. [Key Controls](#key-controls)
     3. [Virtual Swapchain](#virtual-swapchain)
     4. [Dumping resources](#dumping-resources)
+    5. [Remote Replay Control](#remote-replay-control)
 3. [Other Capture File Processing Tools](#other-capture-file-processing-tools)
     1. [Capture File Info](#capture-file-info)
     2. [Capture File Compression](#capture-file-compression)
@@ -644,6 +645,7 @@ gfxrecon-replay         [-h | --help] [--version] [--cpu-mask <binary-mask>] [--
                         [--isolate-render-passes]
                         [--serialize-compute-and-transfer]
                         [--annotate-injected-commands]
+                        [--remote-connect <address> | --remote-listen <address>]
 
 
 Required arguments:
@@ -927,6 +929,17 @@ Optional arguments:
               Wrap commands injected by replay (not present in the capture,
               e.g. virtual-swapchain copies and ray-tracing SBT fixups) in
               VK_EXT_debug_utils labels named "GFXR Replay: <category>"
+  --remote-connect <address>
+              Connect out to a controller process, which supplies the replay
+              settings and receives log, progress and output files over the
+              same socket. Address forms: tcp:host:port, unix:@name (abstract),
+              or unix:/path. The unix: forms are not available on Windows.
+              See [Remote Replay Control](#remote-replay-control).
+  --remote-listen <address>
+              Listen for a controller process to connect, instead of dialing
+              out. Same address forms as --remote-connect. Waits up to 30
+              seconds for a connection, then fails. Mutually exclusive with
+              --remote-connect.
 ```
 
 ### Frame Warm-Up
@@ -1043,6 +1056,77 @@ The `--sgfr` option specify at which frames these conditions apply. If `--sgfr` 
 ### Dumping resources
 
 GFXReconstruct offers the capability to dump resources when replaying a capture file. Detailed documentation of that feature can be found in [vulkan_dump_resources.md](./vulkan_dump_resources.md)
+
+### Remote Replay Control
+
+`gfxrecon-replay` can take its entire configuration from a controller process
+over a socket, instead of from the command line. The same socket carries replay's
+log messages, progress, and output files back to the controller, so a replay can
+run on a device with no writable output location and no shell access.
+
+Either side may open the connection:
+
+* `--remote-connect <address>` dials out to a controller that is already
+  listening.
+* `--remote-listen <address>` binds and waits up to 30 seconds for a controller
+  to connect.
+
+The two are mutually exclusive, and if the requested connection is not
+established replay exits with an error rather than falling back to the command
+line. Addresses take the form `tcp:host:port`, `unix:@name` (an abstract socket,
+Linux and Android only), or `unix:/path` (POSIX only). Windows supports the
+`tcp:` form only.
+
+[scripts/replay_controller.py](./scripts/replay_controller.py) is a reference
+controller. With it listening, replay dials out:
+
+```bash
+# Terminal 1 - the controller, which also receives the streamed output.
+python3 scripts/replay_controller.py --listen 127.0.0.1:9001 \
+    --output-dir remote_output \
+    -- --loop-count=3 --screenshot-all capture_file=capture.gfxr
+
+# Terminal 2 - replay needs no settings and no capture file on its command line.
+gfxrecon-replay --remote-connect tcp:127.0.0.1:9001
+```
+
+Reversing the roles needs only the opposite options, `--remote-listen` on replay
+and `--connect` on the controller; nothing else about the session changes.
+
+Settings travel as `key=value` pairs rather than as a command line, so each
+option is joined to its value with `=` and the capture file is named by the
+`capture_file` key instead of being positional. Leading dashes are optional.
+Replay rejects any key it does not recognize and names it in the error.
+
+Files that a run needs as *input* are pushed from the controller, so they do not
+have to exist on the replay machine. This covers `--dump-resources`,
+`--frame-warm-up-spirv` and `--load-pipeline-cache`; the controller reads the
+local file named in the setting and sends it during the handshake.
+
+Output produced during replay — screenshots, and dump-resources buffers and
+images — streams to the controller and is written under its `--output-dir`
+instead of to local disk. Some output is not yet streamed and is still written
+by replay itself: `--measurement-file`, `--save-pipeline-cache`, `--log-file`,
+the `--capture` recapture file, and the dump-resources JSON for D3D12 and OpenXR.
+
+When both ends support zstd, the session negotiates stream compression during the
+handshake; the controller requires the Python `zstandard` package and stays
+uncompressed without it.
+
+Replay bounds how much output it will buffer for a slow controller, blocking the
+thread producing files once the bound is reached, so a controller that cannot
+keep up slows replay down rather than growing its memory without limit. A single
+payload larger than the bound is still sent once the channel is idle. When
+replay does wait on the controller it reports the peak, the number of waits and
+the total time lost in its log.
+
+The channel is neither authenticated nor encrypted. It is intended for a trusted
+lab network or a local socket forwarded over adb; do not expose the listening
+port on an untrusted network.
+
+The wire protocol is specified in [docs/remote_protocol.md](./docs/remote_protocol.md).
+For Android, see the remote replay section of
+[USAGE_android.md](./USAGE_android.md).
 
 ## Other Capture File Processing Tools
 

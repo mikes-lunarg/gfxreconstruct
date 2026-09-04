@@ -31,8 +31,9 @@ to one of these other documents:
     3. [Capture Files](#capture-files)
 2. [Replaying API Calls](#replaying-api-calls)
     1. [Command Line Arguments](#command-line-arguments)
-    2. [Keyboard Controls](#keyboard-controls)
-    3. [Capturing Replay (Recapture)](#capturing-replay-recapture)
+    2. [Remote Replay Control](#remote-replay-control)
+    3. [Keyboard Controls](#keyboard-controls)
+    4. [Capturing Replay (Recapture)](#capturing-replay-recapture)
 3. [Other Capture File Processing Tools](#other-capture-file-processing-tools)
     1. [Capture File Info](#capture-file-info)
     2. [Capture File Compression](#capture-file-compression)
@@ -334,7 +335,34 @@ Optional arguments:
                         Directory to write dump resources output files. Default is the current working directory.
   --dump-resources-modifiable-state-only
                         Only dump resources that are in a modifiable state set by D3D12 ResourceBarrier
+  --remote-connect <address>
+                        Connect out to a controller process, which supplies the replay settings and
+                        receives log, progress and output files over the same socket. Address form is
+                        tcp:host:port. See Remote Replay Control below.
+  --remote-listen <address>
+                        Listen for a controller process to connect instead of dialing out. Same address
+                        form as --remote-connect. Waits up to 30 seconds for a connection, then fails.
+                        Mutually exclusive with --remote-connect.
 ```
+
+### Remote Replay Control
+
+`gfxrecon-replay` can take its entire configuration from a controller process
+over a socket rather than from the command line, streaming its log, progress and
+output files back over the same connection.
+
+The transport, settings format and reference controller are shared with Vulkan
+replay and are documented in
+[Remote Replay Control](./USAGE_desktop_Vulkan.md#remote-replay-control); the
+wire protocol is specified in [docs/remote_protocol.md](./docs/remote_protocol.md).
+
+Two things differ for D3D12:
+
+* Only the `tcp:` address form is available, since the `unix:` forms are POSIX
+  only.
+* Screenshots and dumped buffers and images stream to the controller, but the
+  **D3D12 dump-resources JSON is still written to local disk** — that hook is
+  currently wired only for Vulkan.
 
 
 
