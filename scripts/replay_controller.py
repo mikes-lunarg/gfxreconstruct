@@ -312,6 +312,29 @@ class Channel:
 
     Compression sits below the framing: enable_send_compression() and enable_recv_compression() change only
     how frame bytes reach and leave the socket, so callers keep sending and receiving whole frames.
+
+    >>> import socket
+    >>> a, b = socket.socketpair()
+    >>> sender, receiver = Channel(a), Channel(b)
+    >>> sender.send_json({'type': 'welcome'})
+    >>> json.loads(receiver.recv_frame())
+    {'type': 'welcome'}
+    >>> a.close(), b.close()
+    (None, None)
+
+    Enabling compression changes nothing a caller can observe, which is the point of putting it below
+    the framing (this reads the same whether or not the zstandard package is installed):
+
+    >>> a, b = socket.socketpair()
+    >>> sender, receiver = Channel(a), Channel(b)
+    >>> if zstandard is not None:
+    ...     sender.enable_send_compression()
+    ...     receiver.enable_recv_compression()
+    >>> sender.send_json({'type': 'settings', 'options': {'loop_count': '3'}})
+    >>> json.loads(receiver.recv_frame()) == {'type': 'settings', 'options': {'loop_count': '3'}}
+    True
+    >>> a.close(), b.close()
+    (None, None)
     '''
 
     def __init__(self, conn):
@@ -375,6 +398,24 @@ def negotiate_features(chan, hello, allow_compression):
 
     Selects stream compression for each direction the replay build advertised, when the zstandard package
     is available and --no-compress was not given. Each direction switches immediately after welcome.
+
+    A key absent from the tool's hello is never selected, so a build without zstd is answered with a bare
+    welcome even when this controller could compress:
+
+    >>> import socket
+    >>> a, b = socket.socketpair()
+    >>> tool, controller = Channel(a), Channel(b)
+    >>> negotiate_features(controller, {'type': 'hello', 'features': {}}, True)
+    >>> json.loads(tool.recv_frame())
+    {'type': 'welcome'}
+
+    Declining with --no-compress leaves an advertised feature unselected:
+
+    >>> negotiate_features(controller, {'features': {'compress_output': True}}, False)
+    >>> json.loads(tool.recv_frame())
+    {'type': 'welcome'}
+    >>> a.close(), b.close()
+    (None, None)
     '''
     advertised = hello.get('features') or {}
     selected = {}
