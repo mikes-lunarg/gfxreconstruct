@@ -380,3 +380,31 @@ TEST_CASE("RemoteChannel reports completion", "[remote_channel]")
     CHECK(done.at("type") == "done");
     CHECK(done.at("success") == true);
 }
+
+TEST_CASE("RemoteChannel queues trigger actions from the controller", "[remote_channel]")
+{
+    TestController                     controller;
+    util::RemoteChannel                channel;
+    std::map<std::string, std::string> settings;
+    ChannelRunner                      runner(channel, controller.Address(), settings);
+
+    AcceptAndReadHello(controller);
+    controller.SendJson(SettingsMessage());
+    REQUIRE(controller.RecvJson().at("type") == "ready");
+    REQUIRE(runner.Result());
+
+    controller.SendJson({ { "type", "trigger" }, { "action", "pause" } });
+
+    std::string action;
+    CHECK(channel.WaitPopTrigger(&action, std::chrono::seconds(kSocketTimeoutSeconds)));
+    CHECK(action == "pause");
+
+    // Actions are delivered in the order the controller sent them.
+    controller.SendJson({ { "type", "trigger" }, { "action", "step" } });
+    controller.SendJson({ { "type", "trigger" }, { "action", "resume" } });
+
+    CHECK(channel.WaitPopTrigger(&action, std::chrono::seconds(kSocketTimeoutSeconds)));
+    CHECK(action == "step");
+    CHECK(channel.WaitPopTrigger(&action, std::chrono::seconds(kSocketTimeoutSeconds)));
+    CHECK(action == "resume");
+}

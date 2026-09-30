@@ -43,6 +43,9 @@ Every frame is a length-prefixed byte string:
 
 - All target devices are little-endian; no byte-swapping is performed.
 - No maximum frame size is enforced.
+- The replay thread applies queued actions between blocks. While paused with a
+  remote attached, it waits up to 10 ms on the trigger queue rather than blocking
+  on window events (Android has no keyboard).
 - Structured messages are UTF-8 JSON payloads. These could be migrated to a binary format such as protobuf or even GFXR's own encode/decode machinery.
 - Binary file payloads are sent as a JSON `"file"` metadata frame **immediately
   followed** by a separate raw binary frame (no base64). After a `"file"`
@@ -72,6 +75,7 @@ replay     → controller:  {"type":"ready"}
 
 ```json
 {"type":"settings","options":{"<key>":"<value>", ...}}
+{"type":"trigger","action":"pause"}   // "pause" | "resume" | "step" | "stop"
 ```
 
 ### Replay → controller
@@ -121,6 +125,13 @@ already a `<string, string>` map. The key sets are disjoint; the shape is not.
 
 - **Frame-level** — `{"type":"progress","frame":N}`, emitted per replayed frame.
 
+## Playback Triggers
+
+Triggers (`pause` / `resume` / `step` / `stop`) are received on replay's
+receiver thread and queued separately from block processing. The replay thread
+applies queued actions between blocks. While paused with a remote attached, it
+waits up to 10 ms on the trigger queue rather than blocking on window events.
+
 ## File Streaming
 
 When a channel is active (`RemoteChannel::IsActive()`), file writers stream their
@@ -139,14 +150,15 @@ back to disk.
 
 ## Threading Model
 
-`RemoteChannel` runs a sender thread:
+`RemoteChannel` runs a sender thread and a receiver thread:
 
 - All `Send*` calls serialize their message into a single buffer and enqueue it;
   the sender thread drains the queue in order. `SendFile` packs the JSON header
   and binary data into one buffer so they are never interleaved with another
   message.
+- The receiver thread demultiplexes incoming frames into the trigger queue.
 - `Disconnect()` drains and joins the sender (flushing queued messages), then
-  closes the socket.
+  `shutdown()`s the socket to wake the receiver, joins it, and closes.
 
 ## Reference Controller
 
@@ -160,6 +172,7 @@ controller implementation:
   familiar spelling. Deliberately *not* a replay command line: which options take
   a value is not knowable from the tokens alone, so requiring `=` removes the
   guesswork rather than inferring it.
+- Reads `p` / `r` / `s` / `q` from stdin to send pause/resume/step/stop triggers.
 - `--self-test` runs the script's doctests.
 
 ```

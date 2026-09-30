@@ -139,6 +139,12 @@ void CloseSocket(SocketHandle& fd)
     fd = kInvalidSocket;
 }
 
+// Winsock's shutdown() leaves an in-progress recv() parked; only closesocket() cancels it.
+void WakeReceiver(SocketHandle& fd)
+{
+    CloseSocket(fd);
+}
+
 // A timeout_seconds of 0 restores indefinite blocking. Windows takes SO_RCVTIMEO in milliseconds, POSIX as a timeval.
 void SetRecvTimeout(SocketHandle fd, int timeout_seconds)
 {
@@ -181,6 +187,12 @@ void CloseSocket(SocketHandle& fd)
 {
     close(fd);
     fd = kInvalidSocket;
+}
+
+// shutdown() unblocks a parked recv() without closing, so fd stays valid for the caller.
+void WakeReceiver(SocketHandle& fd)
+{
+    shutdown(fd, SHUT_RDWR);
 }
 
 // A timeout_seconds of 0 restores indefinite blocking.
@@ -403,10 +415,21 @@ void RemoteChannel::Disconnect()
 
     if (fd_ != kInvalidSocket)
     {
+        // Wake the receiver thread out of a blocking recv; on Windows that closes the socket, clearing fd_.
+        WakeReceiver(fd_);
+    }
+    if (receiver_thread_.joinable())
+    {
+        receiver_thread_.join();
+    }
+
+    if (fd_ != kInvalidSocket)
+    {
         CloseSocket(fd_);
     }
 
     send_queue_.clear();
+    trigger_queue_.clear();
     queue_bytes_    = 0;
     stop_requested_ = false;
     sender_active_  = false;
@@ -467,6 +490,38 @@ bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
 
     SendJson({ { "type", "ready" } });
 
+    // Restore blocking receives for the receiver thread, which queues trigger messages from the controller.
+    SetRecvTimeout(fd_, 0);
+    receiver_thread_ = std::thread(&RemoteChannel::ReceiverThread, this);
+
+    return true;
+}
+
+bool RemoteChannel::TryPopTrigger(std::string* action)
+{
+    GFXRECON_ASSERT(action != nullptr);
+
+    const std::lock_guard<std::mutex> lock(trigger_mutex_);
+    if (trigger_queue_.empty())
+    {
+        return false;
+    }
+    *action = std::move(trigger_queue_.front());
+    trigger_queue_.pop_front();
+    return true;
+}
+
+bool RemoteChannel::WaitPopTrigger(std::string* action, std::chrono::milliseconds timeout)
+{
+    GFXRECON_ASSERT(action != nullptr);
+
+    std::unique_lock<std::mutex> lock(trigger_mutex_);
+    if (!trigger_cv_.wait_for(lock, timeout, [this] { return !trigger_queue_.empty(); }))
+    {
+        return false;
+    }
+    *action = std::move(trigger_queue_.front());
+    trigger_queue_.pop_front();
     return true;
 }
 
@@ -582,6 +637,41 @@ void RemoteChannel::EnqueueFrames(std::vector<uint8_t>&& buffer, bool stall_when
         send_queue_.push_back(std::move(buffer));
     }
     queue_cv_.notify_one();
+}
+
+void RemoteChannel::ReceiverThread()
+{
+    std::vector<uint8_t> frame;
+    while (RecvFrame(frame))
+    {
+        nlohmann::json msg = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
+        if (msg.is_discarded() || !msg.contains("type"))
+        {
+            GFXRECON_LOG_WARNING("Remote channel: ignoring malformed message from controller");
+            continue;
+        }
+
+        if (msg["type"] == "trigger")
+        {
+            std::string action = msg.value("action", std::string());
+            if (action.empty())
+            {
+                GFXRECON_LOG_WARNING("Remote channel: ignoring trigger message without an action");
+                continue;
+            }
+            {
+                const std::lock_guard<std::mutex> lock(trigger_mutex_);
+                trigger_queue_.push_back(std::move(action));
+            }
+            trigger_cv_.notify_one();
+        }
+        else
+        {
+            GFXRECON_LOG_WARNING("Remote channel: ignoring unexpected message type '%s'", msg["type"].dump().c_str());
+        }
+    }
+
+    // The controller disconnected or Disconnect() shut the socket down.
 }
 
 void RemoteChannel::SenderThread()

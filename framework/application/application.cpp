@@ -54,6 +54,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(application)
@@ -206,7 +207,15 @@ void Application::Run()
 
     while (running_)
     {
-        ProcessEvents(paused_);
+        // With a remote controller attached, do not block indefinitely on window events while paused;
+        // ApplyRemoteTriggers() bounds the wait so controller commands are still serviced.
+        const bool remote_attached = (remote_channel_ != nullptr);
+        ProcessEvents(paused_ && !remote_attached);
+
+        if (remote_attached)
+        {
+            ApplyRemoteTriggers();
+        }
 
         // Only process the next frame if a quit event was not processed or not paused.
         if (running_ && !paused_)
@@ -286,6 +295,52 @@ void Application::SetPaused(bool paused)
     }
 
     paused_ = paused;
+}
+
+void Application::ApplyRemoteTriggers()
+{
+    GFXRECON_ASSERT(remote_channel_ != nullptr);
+
+    std::string action;
+
+    // While paused the main loop has no other work; wait briefly for a command instead of spinning between
+    // window event polls.
+    if (paused_ && remote_channel_->WaitPopTrigger(&action, std::chrono::milliseconds(10)))
+    {
+        ApplyRemoteTrigger(action);
+    }
+
+    while (remote_channel_->TryPopTrigger(&action))
+    {
+        ApplyRemoteTrigger(action);
+    }
+}
+
+void Application::ApplyRemoteTrigger(const std::string& action)
+{
+    if (action == "pause")
+    {
+        SetPaused(true);
+    }
+    else if (action == "resume")
+    {
+        SetPaused(false);
+    }
+    else if (action == "step")
+    {
+        if (paused_)
+        {
+            PlaySingleFrame();
+        }
+    }
+    else if (action == "stop")
+    {
+        StopRunning();
+    }
+    else
+    {
+        GFXRECON_LOG_WARNING("Ignoring unknown remote trigger action '%s'", action.c_str());
+    }
 }
 
 bool Application::PlaySingleFrame()

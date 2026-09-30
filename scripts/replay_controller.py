@@ -52,10 +52,25 @@ Backpressure testing (a slow controller against replay's bounded send queue):
 import argparse
 import json
 import os
+import queue
+import select
 import socket
 import struct
 import sys
+import threading
 import time
+
+TRIGGER_COMMANDS = {
+    'p': 'pause',
+    'pause': 'pause',
+    'r': 'resume',
+    'resume': 'resume',
+    's': 'step',
+    'n': 'step',
+    'step': 'step',
+    'q': 'stop',
+    'stop': 'stop',
+}
 
 
 def normalize(token):
@@ -190,6 +205,30 @@ def send_json(conn, obj):
     send_frame(conn, json.dumps(obj).encode('utf-8'))
 
 
+def send_command(conn, line):
+    '''Send the trigger matching one line of command input.'''
+    line = line.strip().lower()
+    if not line:
+        return
+    action = TRIGGER_COMMANDS.get(line)
+    if action is None:
+        print(f"Unknown command '{line}' (p=pause, r=resume, s=step, q=stop)")
+        return
+    send_json(conn, {'type': 'trigger', 'action': action})
+
+
+def start_command_reader():
+    '''Read stdin lines on a daemon thread; select() on stdin is POSIX-only, but a queue works everywhere.'''
+    commands = queue.Queue()
+
+    def reader():
+        for line in sys.stdin:
+            commands.put(line)
+
+    threading.Thread(target=reader, daemon=True).start()
+    return commands
+
+
 def handle_session(conn, options, output_dir):
     '''Run the handshake and process messages until replay reports done.
 
@@ -216,9 +255,24 @@ def handle_session(conn, options, output_dir):
         print('Replay did not acknowledge settings', file=sys.stderr)
         return False
 
+    commands = None
+    if sys.stdin.isatty():
+        commands = start_command_reader()
+        print(
+            'Commands: p=pause, r=resume, s=step, q=stop (press Enter after each)'
+        )
+
     success = False
     prev_msg_type = None
     while True:
+        if commands is not None:
+            # Windows select() only supports sockets, so poll the socket and drain queued stdin commands.
+            readable, _, _ = select.select([conn], [], [], 0.1)
+            while not commands.empty():
+                send_command(conn, commands.get_nowait())
+            if conn not in readable:
+                continue
+
         frame = recv_frame(conn)
         if frame is None:
             print('Replay disconnected')
