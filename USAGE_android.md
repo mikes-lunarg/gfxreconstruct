@@ -1217,6 +1217,7 @@ activity with the matching option:
 
 ```bash
 python3 scripts/replay_controller.py --launch-adb --listen 127.0.0.1:9001 \
+    --output-dir remote_output \
     -- --screenshot-all capture_file=/sdcard/Download/android_capture.gfxr
 ```
 
@@ -1249,7 +1250,8 @@ adb forward --remove tcp:9001                 # before a connect-mode run
 
 `replay_controller.py` clears the opposite mapping automatically on each run.
 
-For the options themselves, the settings format, and the security posture, see
+For the options themselves, the settings format, which outputs stream and which
+do not, and the security posture, see
 [Remote Replay Control](./USAGE_desktop_Vulkan.md#remote-replay-control) in the
 desktop Vulkan documentation. The wire protocol is specified in
 [docs/remote_protocol.md](./docs/remote_protocol.md).

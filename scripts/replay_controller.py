@@ -31,7 +31,8 @@ supports both directions of connection setup:
     with --remote-listen.
 
 Wire format: each frame is a little-endian uint32 length prefix followed by
-that many payload bytes. Structured messages are JSON.
+that many payload bytes. Structured messages are JSON. A binary file payload is
+a JSON "file" frame immediately followed by a raw binary frame.
 
 Replay settings travel as key/value pairs, not as a command line: a key is a
 replay option with its leading dashes stripped and '-' replaced by '_', and
@@ -163,7 +164,7 @@ def send_json(conn, obj):
     send_frame(conn, json.dumps(obj).encode('utf-8'))
 
 
-def handle_session(conn, options, hello=None):
+def handle_session(conn, options, output_dir, hello=None):
     '''Run the handshake and process messages until replay reports done.
 
     options is the settings dict sent to replay.
@@ -203,7 +204,14 @@ def handle_session(conn, options, hello=None):
         msg = json.loads(frame)
         msg_type = msg.get('type')
 
-        if msg_type == 'done':
+        if msg_type == 'file':
+            # A "file" message is always followed by a raw binary frame.
+            name = msg.get('name', 'unnamed')
+            expected = msg.get('size', 0)
+            blob = recv_frame(conn)
+            blob = blob if blob is not None else b''
+            save_file(output_dir, name, blob, expected)
+        elif msg_type == 'done':
             success = bool(msg.get('success'))
             print(f'Replay finished (success={success})')
             break
@@ -211,6 +219,25 @@ def handle_session(conn, options, hello=None):
             print(f'Unknown message: {msg}', file=sys.stderr)
 
     return success
+
+
+def save_file(output_dir, name, blob, expected_size):
+    if len(blob) != expected_size:
+        print(
+            f"Warning: '{name}' expected {expected_size} bytes, got {len(blob)}",
+            file=sys.stderr)
+
+    # Keep the relative path from replay but anchor it under output_dir, and
+    # never let it escape via leading slashes or '..'.
+    safe_name = os.path.normpath(name).lstrip(os.sep)
+    if safe_name.startswith('..'):
+        safe_name = os.path.basename(name)
+    dest = os.path.join(output_dir, safe_name)
+
+    os.makedirs(os.path.dirname(dest) or '.', exist_ok=True)
+    with open(dest, 'wb') as out:
+        out.write(blob)
+    print(f"Saved file: {dest} ({len(blob)} bytes)")
 
 
 def connect_and_await_hello(host, port, timeout_seconds=30):
@@ -377,13 +404,14 @@ def adb_prepare(mode, port):
         raise ControllerError(f'failed to set up adb remote: {e}') from e
 
 
-def run_session(conn, options, hello=None):
+def run_session(conn, options, output_dir, hello=None):
     '''Drive one replay session over an already-connected socket. Returns True on success.'''
     with conn:
-        return handle_session(conn, options, hello)
+        return handle_session(conn, options, output_dir, hello)
 
 
 def run_replay(options,
+               output_dir,
                mode='listen',
                host='127.0.0.1',
                port=9001,
@@ -407,6 +435,7 @@ def run_replay(options,
             'connect mode needs a real port; port 0 is only valid when listening'
         )
 
+    os.makedirs(output_dir, exist_ok=True)
     proc = None
 
     if mode == 'connect':
@@ -423,7 +452,7 @@ def run_replay(options,
             reap_replay(proc)
             return False
         print(f'Connected to replay at {host}:{port}')
-        success = run_session(conn, options, hello)
+        success = run_session(conn, options, output_dir, hello)
     else:
         server, port = open_listen_socket(host, port)
         print(f'Listening on {host}:{port}')
@@ -437,7 +466,7 @@ def run_replay(options,
 
             conn, peer = server.accept()
             print(f'Replay connected from {peer[0]}:{peer[1]}')
-        success = run_session(conn, options, None)
+        success = run_session(conn, options, output_dir, None)
 
     returncode = reap_replay(proc)
     if returncode:
@@ -482,6 +511,12 @@ rejects any key it does not recognize, naming it in the error.''')
         help='Start replay locally with this command, appending the matching '
         '--remote-connect/--remote-listen option and this controller\'s '
         'address. Use with --listen 127.0.0.1:0 to pick a free port.')
+    parser.add_argument(
+        '--output-dir',
+        default='remote_output',
+        help=
+        'Directory for files streamed back by replay (default: remote_output).'
+    )
     parser.add_argument('--self-test',
                         action='store_true',
                         help='Run this script\'s doctests and exit.')
@@ -526,6 +561,7 @@ rejects any key it does not recognize, naming it in the error.''')
 
     try:
         success = run_replay(options,
+                             args.output_dir,
                              mode=mode,
                              host=host,
                              port=port,
