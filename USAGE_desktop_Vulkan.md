@@ -1097,6 +1097,11 @@ option is joined to its value with `=` and the capture file is named by the
 `capture_file` key instead of being positional. Leading dashes are optional.
 Replay rejects any key it does not recognize and names it in the error.
 
+Files that a run needs as *input* are pushed from the controller, so they do not
+have to exist on the replay machine. This covers `--dump-resources`,
+`--frame-warm-up-spirv` and `--load-pipeline-cache`; the controller reads the
+local file named in the setting and sends it during the handshake.
+
 Output produced during replay — screenshots, and dump-resources buffers and
 images — streams to the controller and is written under its `--output-dir`
 instead of to local disk. Some output is not yet streamed and is still written
