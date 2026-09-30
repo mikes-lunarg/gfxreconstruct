@@ -38,6 +38,7 @@
 
 #include "util/remote_channel.h"
 
+#include "util/input_file_store.h"
 #include "util/logging.h"
 
 #include <algorithm>
@@ -65,8 +66,6 @@ constexpr int kHandshakeTimeoutSeconds = 5;
 // How long Disconnect() waits for the controller to close its end before closing anyway.
 constexpr int kCloseTimeoutSeconds = 2;
 
-// The controller only sends small JSON messages; a larger length prefix is a protocol error, not an allocation request.
-constexpr uint32_t kMaxRecvFrameSize = 1024 * 1024;
 
 // The rest of this block adapts Winsock and BSD sockets to the one interface used by the logic below.
 #if defined(_WIN32)
@@ -767,37 +766,59 @@ bool RemoteChannel::Handshake(std::map<std::string, std::string>& settings)
     // A timed-out Winsock call leaves the socket indeterminate, so every failure below has to stay fatal.
     SetRecvTimeout(fd_, kHandshakeTimeoutSeconds);
 
-    std::vector<uint8_t> frame;
-    if (!RecvFrame(fd_, frame))
+    // "settings" ends the controller's opening turn; any "file" messages precede it. Reading until it arrives means a
+    // controller that pushes no files sends nothing extra, so no count or terminator is needed.
+    for (;;)
     {
-        GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for settings");
-        return false;
-    }
-
-    nlohmann::json msg = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
-    if (msg.is_discarded() || !msg.contains("type") || msg["type"] != "settings")
-    {
-        GFXRECON_LOG_ERROR("Remote channel: handshake received unexpected message");
-        return false;
-    }
-
-    // Not value(), which throws on a type mismatch: a controller bug should fail the handshake, not kill replay.
-    const auto options_entry = msg.find("options");
-    if ((options_entry == msg.end()) || !options_entry->is_object())
-    {
-        GFXRECON_LOG_ERROR("Remote channel: settings message is missing an options object");
-        return false;
-    }
-
-    // A JSON scalar is a controller-side mistake, never coerced.
-    for (const auto& option : options_entry->items())
-    {
-        if (!option.value().is_string())
+        std::vector<uint8_t> frame;
+        if (!RecvFrame(fd_, frame))
         {
-            GFXRECON_LOG_ERROR("Remote channel: value of setting \"%s\" is not a string", option.key().c_str());
+            GFXRECON_LOG_ERROR("Remote channel: handshake failed waiting for settings");
             return false;
         }
-        settings[option.key()] = option.value().get<std::string>();
+
+        nlohmann::json msg = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
+        if (msg.is_discarded() || !msg.contains("type") || !msg["type"].is_string())
+        {
+            GFXRECON_LOG_ERROR("Remote channel: handshake received malformed message");
+            return false;
+        }
+
+        const std::string type = msg["type"].get<std::string>();
+        if (type == "settings")
+        {
+            // Not value(), which throws on a type mismatch, as in ReceiveInputFile() below.
+            const auto options_entry = msg.find("options");
+            if ((options_entry == msg.end()) || !options_entry->is_object())
+            {
+                GFXRECON_LOG_ERROR("Remote channel: settings message is missing an options object");
+                return false;
+            }
+
+            // A JSON scalar is a controller-side mistake, never coerced.
+            for (const auto& option : options_entry->items())
+            {
+                if (!option.value().is_string())
+                {
+                    GFXRECON_LOG_ERROR("Remote channel: value of setting \"%s\" is not a string", option.key().c_str());
+                    return false;
+                }
+                settings[option.key()] = option.value().get<std::string>();
+            }
+            break;
+        }
+
+        if (type == "file")
+        {
+            if (!ReceiveInputFile(msg))
+            {
+                return false;
+            }
+            continue;
+        }
+
+        GFXRECON_LOG_ERROR("Remote channel: handshake received unexpected \"%s\" message", type.c_str());
+        return false;
     }
 
     if (settings.empty())
@@ -842,6 +863,51 @@ bool RemoteChannel::WaitPopControl(std::string* action, std::chrono::millisecond
     *action = std::move(control_queue_.front());
     control_queue_.pop_front();
     return true;
+}
+
+bool RemoteChannel::ReceiveInputFile(const nlohmann::json& header)
+{
+    // Not value(), which throws on a type mismatch: a controller bug should fail the handshake, not kill replay.
+    const auto name_entry = header.find("name");
+    if ((name_entry == header.end()) || !name_entry->is_string())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: input file message is missing a name");
+        return false;
+    }
+    const std::string name = name_entry->get<std::string>();
+
+    // The frame's length prefix is authoritative; size is only cross-checked, so a mis-framed transfer fails here
+    // rather than surfacing later as a corrupt input file.
+    std::vector<uint8_t> data;
+    if (!RecvFrame(fd_, data, std::numeric_limits<uint32_t>::max()))
+    {
+        GFXRECON_LOG_ERROR("Remote channel: failed receiving contents of input file \"%s\"", name.c_str());
+        return false;
+    }
+
+    const auto size_entry = header.find("size");
+    if ((size_entry == header.end()) || !size_entry->is_number_unsigned())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: input file \"%s\" message is missing a size", name.c_str());
+        return false;
+    }
+
+    const uint64_t expected_size = size_entry->get<uint64_t>();
+    if (expected_size != data.size())
+    {
+        GFXRECON_LOG_ERROR("Remote channel: input file \"%s\" declared %" PRIu64 " bytes but %" PRIu64 " were received",
+                           name.c_str(),
+                           expected_size,
+                           static_cast<uint64_t>(data.size()));
+        return false;
+    }
+
+    // The controller's name, never where the file landed: target-side handling stays unspecified.
+    GFXRECON_LOG_INFO("Remote channel: received input file \"%s\" (%" PRIu64 " bytes)",
+                      name.c_str(),
+                      static_cast<uint64_t>(data.size()));
+
+    return InputFileStore::Add(name, data);
 }
 
 void RemoteChannel::SendJson(const nlohmann::json& msg)
@@ -1051,7 +1117,7 @@ void RemoteChannel::SenderThread()
     }
 }
 
-bool RemoteChannel::RecvFrame(SocketHandle fd, std::vector<uint8_t>& out)
+bool RemoteChannel::RecvFrame(SocketHandle fd, std::vector<uint8_t>& out, uint32_t max_size)
 {
     uint32_t length = 0;
     if (!RecvExact(fd, &length, sizeof(length)))
@@ -1059,11 +1125,11 @@ bool RemoteChannel::RecvFrame(SocketHandle fd, std::vector<uint8_t>& out)
         return false;
     }
 
-    if (length > kMaxRecvFrameSize)
+    if (length > max_size)
     {
         GFXRECON_LOG_ERROR("Remote channel: controller sent a %" PRIu32 "-byte frame, over the %" PRIu32 "-byte limit",
                            length,
-                           kMaxRecvFrameSize);
+                           max_size);
         return false;
     }
 

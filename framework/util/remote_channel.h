@@ -59,6 +59,10 @@ constexpr SocketHandle kInvalidSocket = static_cast<SocketHandle>(-1); // Also W
 // idle, so this bounds memory without ever refusing data.
 constexpr size_t kSendQueueLimit = 64 * 1024 * 1024;
 
+// Control messages from the controller are small JSON; a larger length prefix is a protocol error, not an allocation
+// request. Handshake input files are exempt.
+constexpr uint32_t kMaxRecvFrameSize = 1024 * 1024;
+
 // RemoteChannel links gfxrecon-replay to a controller process over a socket for bidirectional I/O. The controller
 // sends replay settings; replay sends back log messages, progress, screenshots, and dump-resources files. Replay can
 // establish the socket either as the client (Connect(), dialing out to a listening controller) or as the server
@@ -153,8 +157,12 @@ class RemoteChannel
     // Receiver thread entry point: queues incoming control actions until the controller disconnects.
     void ReceiverThread(SocketHandle fd);
 
+    // Handle a handshake "file" message: receive the binary frame that follows header and hand it to the input file
+    // store. Returns false on a malformed transfer, which fails the handshake.
+    bool ReceiveInputFile(const nlohmann::json& header);
+
     // Take the socket as a parameter so the receiver thread never reads fd_ while Disconnect() changes it.
-    static bool RecvFrame(SocketHandle fd, std::vector<uint8_t>& out);
+    static bool RecvFrame(SocketHandle fd, std::vector<uint8_t>& out, uint32_t max_size = kMaxRecvFrameSize);
     static bool RecvExact(SocketHandle fd, void* buf, size_t size);
     bool        SendAll(const void* buf, size_t size);
 
