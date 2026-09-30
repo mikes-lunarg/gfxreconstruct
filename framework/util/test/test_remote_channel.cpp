@@ -363,7 +363,7 @@ TEST_CASE("RemoteChannel sends a file as a header frame followed by its payload"
     CHECK(received == payload);
 }
 
-TEST_CASE("RemoteChannel reports completion", "[remote_channel]")
+TEST_CASE("RemoteChannel reports progress and completion", "[remote_channel]")
 {
     TestController                     controller;
     util::RemoteChannel                channel;
@@ -374,6 +374,12 @@ TEST_CASE("RemoteChannel reports completion", "[remote_channel]")
     controller.SendJson(SettingsMessage());
     REQUIRE(controller.RecvJson().at("type") == "ready");
     REQUIRE(runner.Result());
+
+    channel.SendProgress(42, 1337);
+    const json progress = controller.RecvJson();
+    CHECK(progress.at("type") == "progress");
+    CHECK(progress.at("frame") == 42);
+    CHECK(progress.at("block") == 1337);
 
     channel.SendDone(true);
     const json done = controller.RecvJson();
