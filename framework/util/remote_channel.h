@@ -102,6 +102,7 @@ class RemoteChannel
     // applies backpressure once the queue is full (see kSendQueueLimit).
     void SendJson(const nlohmann::json& msg);
     void SendFile(const std::string& name, const void* data, size_t size);
+    void SendLog(LoggingSeverity severity, const std::string& message);
     void SendProgress(uint64_t frame, uint64_t block);
     void SendDone(bool success); // Also calls Disconnect().
 
@@ -124,6 +125,11 @@ class RemoteChannel
     // Report progress of a bounded operation (with a total, unlike frame-level SendProgress) on the active channel; a
     // no-op when no channel is connected. Emits {"type":"operation_progress","operation":<op>,"current":X,"total":Y}.
     static void SendActiveProgress(const char* operation, uint64_t current, uint64_t total);
+
+    // Relay a log message to the active channel; a no-op when no channel is registered or connected. Lets the logging
+    // module's remote target reach the channel without holding a pointer to it. Safe to call from any thread, and from
+    // within a log call: the send path never logs, so it cannot re-enter logging.
+    static void SendActiveLog(LoggingSeverity severity, const std::string& message);
 
   private:
     // Append a length-prefixed frame to buffer.

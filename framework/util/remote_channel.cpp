@@ -302,6 +302,28 @@ std::string AddrInfoErrorString(int error)
 #endif
 }
 
+// Convert a LoggingSeverity to the lowercase level string used in the wire protocol.
+const char* SeverityToLevelString(LoggingSeverity severity)
+{
+    switch (severity)
+    {
+        case LoggingSeverity::kVerbose:
+            return "verbose";
+        case LoggingSeverity::kDebug:
+            return "debug";
+        case LoggingSeverity::kInfo:
+            return "info";
+        case LoggingSeverity::kWarning:
+            return "warning";
+        case LoggingSeverity::kError:
+            return "error";
+        case LoggingSeverity::kFatal:
+            return "fatal";
+        default:
+            return "info";
+    }
+}
+
 // Connect a TCP socket described by "host:port". Returns a connected fd, or kInvalidSocket on failure.
 SocketHandle ConnectTcp(const std::string& host_port)
 {
@@ -581,6 +603,11 @@ void RemoteChannel::LogSendQueueStats() const
                     static_cast<double>(stat_stall_ns_.load()) / 1e6);
 }
 
+void RemoteChannel::SendLog(LoggingSeverity severity, const std::string& message)
+{
+    SendJson({ { "type", "log" }, { "level", SeverityToLevelString(severity) }, { "message", message } });
+}
+
 void RemoteChannel::SendProgress(uint64_t frame, uint64_t block)
 {
     SendJson({ { "type", "progress" }, { "frame", frame }, { "block", block } });
@@ -780,11 +807,13 @@ RemoteChannel* RemoteChannel::active_channel_ = nullptr;
 void RemoteChannel::SetActiveChannel(RemoteChannel* channel)
 {
     active_channel_ = channel;
+    Log::UpdateRemoteTarget(channel != nullptr);
 }
 
 bool RemoteChannel::IsActive()
 {
-    return active_channel_ != nullptr && active_channel_->IsConnected();
+    RemoteChannel* channel = active_channel_;
+    return channel != nullptr && channel->IsConnected();
 }
 
 void RemoteChannel::SendActiveFile(const std::string& name, const void* data, size_t size)
@@ -805,6 +834,15 @@ void RemoteChannel::SendActiveProgress(const char* operation, uint64_t current, 
                             { "operation", operation },
                             { "current", current },
                             { "total", total } });
+    }
+}
+
+void RemoteChannel::SendActiveLog(LoggingSeverity severity, const std::string& message)
+{
+    RemoteChannel* channel = active_channel_;
+    if (channel != nullptr && channel->IsConnected())
+    {
+        channel->SendLog(severity, message);
     }
 }
 

@@ -69,6 +69,10 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel&  channel,
         return RemoteSetupResult::kFailed;
     }
 
+    // Registered before the settings are parsed, so complaints about them reach the controller that sent them rather
+    // than only the target's local log.
+    util::RemoteChannel::SetActiveChannel(&channel);
+
     // Replace the local arguments with the settings provided by the controller.
     arg_parser = util::ArgumentParser(settings, options, arguments, kRemoteCaptureFileKey);
 
@@ -86,9 +90,6 @@ RemoteSetupResult SetupRemoteChannel(util::RemoteChannel&  channel,
         ShutdownRemoteChannel(channel, false);
         return RemoteSetupResult::kFailed;
     }
-
-    // Make the channel reachable process-wide, for components that cannot be handed a pointer to it.
-    util::RemoteChannel::SetActiveChannel(&channel);
 
     return RemoteSetupResult::kConnected;
 }

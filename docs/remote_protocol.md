@@ -81,6 +81,7 @@ replay     → controller:  {"type":"ready"}
 ### Replay → controller
 
 ```json
+{"type":"log","level":"info","message":"..."}
 {"type":"progress","frame":42,"block":1234}
 {"type":"operation_progress","operation":"dump_resources","current":37,"total":90}
 {"type":"file","name":"dump/frame_0042.png","size":204800}

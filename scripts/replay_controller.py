@@ -286,7 +286,9 @@ def handle_session(conn, options, output_dir):
         msg = json.loads(frame)
         msg_type = msg.get('type')
 
-        if msg_type in ('progress', 'operation_progress'):
+        if msg_type == 'log':
+            print(f"[{msg.get('level', '?'):7}] {msg.get('message', '')}")
+        elif msg_type in ('progress', 'operation_progress'):
             # Frame-level 'progress' and bounded 'operation_progress' share one in-place status line.
             if msg_type == 'progress':
                 last_frame = msg.get('frame')
