@@ -288,6 +288,27 @@ TEST_CASE("RemoteChannel hello announces the protocol version", "[remote_channel
     CHECK(settings["capture_file"] == "capture.gfxr");
 }
 
+TEST_CASE("RemoteChannel handshake accepts input files pushed before settings", "[remote_channel]")
+{
+    TestController                     controller;
+    util::RemoteChannel                channel;
+    std::map<std::string, std::string> settings;
+    ChannelRunner                      runner(channel, controller.Address(), settings);
+
+    AcceptAndReadHello(controller);
+
+    // A "file" header is followed immediately by its raw binary frame; zero files means zero extra frames, which is
+    // what keeps the ordering rule free for controllers that push nothing.
+    const std::string contents = "{\"draw\": 1}";
+    controller.SendJson({ { "type", "file" }, { "name", "dr.json" }, { "size", contents.size() } });
+    controller.SendFrame(contents.data(), static_cast<uint32_t>(contents.size()));
+
+    controller.SendJson(SettingsMessage());
+
+    CHECK(controller.RecvJson().at("type") == "ready");
+    CHECK(runner.Result());
+}
+
 TEST_CASE("RemoteChannel handshake rejects a malformed opening turn", "[remote_channel]")
 {
     // Every case here must fail the handshake rather than degrade silently, so a controller bug surfaces at startup.
